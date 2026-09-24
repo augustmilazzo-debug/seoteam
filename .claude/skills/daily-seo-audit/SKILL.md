@@ -75,4 +75,5 @@ of your final message that the email could not be sent.
 
 ## 8. Save state
 Commit `reports/DATE/`, `data/` changes, and new snapshots with the message
-`Daily SEO audit DATE`, and push so tomorrow's run can build on today's.
+`Daily SEO audit DATE`, and push to `main` (`git push origin HEAD:main`,
+pulling first if it was updated) so tomorrow's run can build on today's.
