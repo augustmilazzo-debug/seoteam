@@ -1,0 +1,69 @@
+# Site profile for the Akari MedSpa SEO team.
+# Every agent reads this file first. Keep it current.
+
+site:
+  name: Akari MedSpa
+  url: https://akarimedspa.com/
+  cms: WordPress
+  # Edits are made MANUALLY by the owner for now. Agents must never attempt to
+  # log in to or modify WordPress. They produce ready-to-apply instructions.
+  edit_mode: manual
+  business_type: Medical spa (YMYL / health category)
+  owner_lead: Isabel "Izzy" Koo
+  positioning: >
+    Korean skincare philosophy + Western aesthetics. Natural, balanced results
+    without overcorrection. Master-level injectors. "Akari" means light/brightness.
+
+locations:
+  - name: Newport Beach
+    address: 2382 SE Bristol St Ste B1, Newport Beach, CA 92660
+    phone: (949) 628-6949
+    primary: true
+  # The homepage title mentions Pasadena. Confirm whether there is a second
+  # location and add it here with its full name, address and phone.
+
+service_areas: [Newport Beach, Irvine, Costa Mesa, Huntington Beach]
+
+# Known services (from public pages). The site auditor should keep this list
+# in sync with /services/ on every run.
+services:
+  - Botox / neuromodulators (Botox, Daxxify)
+  - Dermal fillers
+  - Biostimulators / collagen stimulators (Sculptra)
+  - Skin boosters (SkinVive, Rejuran)
+  - Microneedling
+  - PRF hair restoration
+  - Skin tightening
+
+key_pages:
+  home: https://akarimedspa.com/
+  services: https://akarimedspa.com/services/
+  about: https://akarimedspa.com/about/
+  service_areas: https://akarimedspa.com/service-areas/
+  blog: https://akarimedspa.com/blog/
+  contact: https://akarimedspa.com/contact/
+
+# Competitors to benchmark against in search and AI answers.
+# Leave empty to let the competitor scout discover them from the SERPs.
+competitors: []
+
+data_sources:
+  google_search_console:
+    property: sc-domain:akarimedspa.com   # or "https://akarimedspa.com/" for a URL-prefix property
+    credentials_env: GSC_SERVICE_ACCOUNT_JSON
+  ahrefs:
+    # Use the Ahrefs connector if it is attached to the session; otherwise the API key.
+    api_key_env: AHREFS_API_KEY
+  ai_engines:
+    # Each engine is checked only if its key is present in the environment.
+    anthropic: ANTHROPIC_API_KEY
+    openai: OPENAI_API_KEY
+    perplexity: PERPLEXITY_API_KEY
+    gemini: GEMINI_API_KEY
+
+report:
+  email_to: augustmilazzo@gmail.com
+  max_priorities_per_day: 3
+  # Do not recommend another change to a page within this many days of its
+  # last implemented change, so the impact of each change can be measured.
+  page_cooldown_days: 21

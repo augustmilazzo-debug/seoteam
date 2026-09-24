@@ -1,0 +1,20 @@
+# Questions real patients ask AI assistants. One per line; lines starting with # are ignored.
+# The AI Visibility Analyst runs each one against every configured AI engine and
+# records whether akarimedspa.com is cited or Akari MedSpa is named.
+# The analyst may propose additions based on Search Console queries; keep this list to ~30.
+best med spa in Newport Beach
+where can I get Botox in Newport Beach CA
+best Botox injector in Newport Beach
+natural looking lip filler Newport Beach
+how much does Botox cost in Newport Beach
+Sculptra vs filler which is better
+where to get Sculptra in Orange County
+what is SkinVive and where can I get it in Orange County
+Rejuran skin booster near Irvine CA
+Korean skincare med spa Orange County
+PRF hair restoration Newport Beach
+microneedling Costa Mesa
+med spa near Irvine CA
+best med spa in Huntington Beach
+Daxxify vs Botox
+glass skin treatment Orange County
