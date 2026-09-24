@@ -24,6 +24,9 @@ site-auditor and growth-scout. Read `config/site.yaml` and
 - Pick at most `report.max_priorities_per_day` from `site.yaml` (default 3).
 - Include at least one **enhance** item (improve an existing page) and, when a
   good one exists, one **grow** item (new page, content, GBP, reviews, links).
+- Keep at least one item that advances a `growth_focus` goal from
+  `site.yaml` (currently the Pasadena build-out) in each day's priorities
+  whenever a sensible next step exists.
 - Critical technical issues (site down, deindexed pages, broken booking)
   always go first, regardless of score.
 - Respect the cooldown: skip pages changed in the last `page_cooldown_days`

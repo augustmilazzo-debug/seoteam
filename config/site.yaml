@@ -19,10 +19,27 @@ locations:
     address: 2382 SE Bristol St Ste B1, Newport Beach, CA 92660
     phone: (949) 628-6949
     primary: true
-  # The homepage title mentions Pasadena. Confirm whether there is a second
-  # location and add it here with its full name, address and phone.
+  - name: Pasadena
+    address: 202 S Lake Ave, Suite 298, Pasadena, CA 91101
+    phone: TODO  # confirm the Pasadena phone number
+    primary: false
+    # Newer office that needs to be BUILT OUT: it gets its own growth track
+    # (see growth_focus below).
 
-service_areas: [Newport Beach, Irvine, Costa Mesa, Huntington Beach]
+service_areas:
+  newport_beach: [Newport Beach, Irvine, Costa Mesa, Huntington Beach]
+  pasadena: [Pasadena, San Marino, South Pasadena, Arcadia, Altadena, San Gabriel, La Cañada Flintridge]
+
+# Standing strategic priorities. The prioritizer should keep at least one
+# item from here in rotation until it is marked done.
+growth_focus:
+  - >
+    Build out the Pasadena office: a strong Pasadena location page, Pasadena
+    versions of the top service pages (each genuinely unique, not city-swapped
+    copies), a separate Google Business Profile, local citations/NAP, Pasadena
+    reviews, LocalBusiness schema per location, and Pasadena prompts in the AI
+    visibility checks. Consolidate or improve existing one-off Pasadena posts
+    (e.g. /daxxify-pasadena-ca-akari-medspa/) into the proper structure.
 
 # Known services (from public pages). The site auditor should keep this list
 # in sync with /services/ on every run.
@@ -33,7 +50,7 @@ services:
   - Skin boosters (SkinVive, Rejuran)
   - Microneedling
   - PRF hair restoration
-  - Skin tightening
+  - Skin tightening (Sofwave)
 
 key_pages:
   home: https://akarimedspa.com/

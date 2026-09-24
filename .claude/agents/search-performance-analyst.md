@@ -24,7 +24,7 @@ local healthcare and aesthetics businesses. Read `config/site.yaml` first.
 - **Declines:** pages or queries that lost >20% clicks or dropped 3+ positions
   vs the previous period. Separate seasonality from real losses.
 - **Cannibalization:** multiple Akari URLs ranking for the same query.
-- **Local intent gaps:** "[service] + [city]" queries for the service areas
+- **Local intent gaps:** "[service] + [city]" queries for BOTH offices' service areas
   where no dedicated page ranks.
 - **Rising queries:** new queries gaining impressions — early content signals.
 
