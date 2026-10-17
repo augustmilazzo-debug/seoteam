@@ -1,0 +1,98 @@
+# Daily med spa outreach for Provahaus (provahaus.com).
+# Read by .claude/skills/daily-medspa-outreach/SKILL.md.
+
+offer:
+  company: Provahaus
+  url: https://provahaus.com/
+  # What we do, in the owner's words. Every email must stay true to this.
+  summary: >
+    We help med spas get more patients for the specific services they want to
+    grow. The med spa tells us which service they want more clients for; we
+    maximize their visibility on Google for that service, then run ads to a
+    dedicated landing page to generate new inquiries.
+  # Never claim results, client names, prices or guarantees not listed here.
+  proof_points: []
+  call_to_action: >
+    Ask if they'd be open to a short call, or simply which one service they'd
+    most like more patients for.
+
+sender:
+  name: TODO  # your name
+  title: TODO  # e.g. Founder, Provahaus
+  # CAN-SPAM requires a valid physical postal address in every commercial
+  # email (a PO box or registered mailbox is fine).
+  postal_address: TODO
+  phone: ""  # optional
+  gmail_account: augustmilazzo@gmail.com
+
+daily:
+  prospects: 20
+  # drafts: create Gmail drafts for review. send: send directly (only allowed
+  # once every sender field above is filled in).
+  mode: drafts
+  # Run summary goes here.
+  summary_email_to: augustmilazzo@gmail.com
+
+targeting:
+  # Work through these metros in order, ~20 new med spas per day, and move on
+  # when a metro runs dry. Progress is kept in data/outreach/state.yaml.
+  country: United States
+  metros:
+    - New York, NY
+    - Los Angeles, CA
+    - Chicago, IL
+    - Dallas, TX
+    - Houston, TX
+    - Miami, FL
+    - Atlanta, GA
+    - Phoenix, AZ
+    - Scottsdale, AZ
+    - Philadelphia, PA
+    - Washington, DC
+    - Boston, MA
+    - San Francisco, CA
+    - San Jose, CA
+    - Seattle, WA
+    - San Diego, CA
+    - Orange County, CA
+    - Denver, CO
+    - Austin, TX
+    - San Antonio, TX
+    - Tampa, FL
+    - Orlando, FL
+    - Fort Lauderdale, FL
+    - Charlotte, NC
+    - Raleigh, NC
+    - Nashville, TN
+    - Las Vegas, NV
+    - Minneapolis, MN
+    - Detroit, MI
+    - St. Louis, MO
+    - Kansas City, MO
+    - Portland, OR
+    - Sacramento, CA
+    - Salt Lake City, UT
+    - Columbus, OH
+    - Cleveland, OH
+    - Cincinnati, OH
+    - Indianapolis, IN
+    - Pittsburgh, PA
+    - Baltimore, MD
+    - Richmond, VA
+    - Virginia Beach, VA
+    - Jacksonville, FL
+    - Naples, FL
+    - West Palm Beach, FL
+    - New Orleans, LA
+    - Oklahoma City, OK
+    - Louisville, KY
+    - Milwaukee, WI
+    - Birmingham, AL
+    - Charleston, SC
+    - Boise, ID
+    - Albuquerque, NM
+    - Omaha, NE
+    - Honolulu, HI
+  # Never contact these (clients, partners, anyone who asked not to be).
+  exclude_domains:
+    - akarimedspa.com

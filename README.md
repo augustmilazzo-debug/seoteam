@@ -39,6 +39,17 @@ Run it manually in Claude Code with: `/daily-seo-audit`
 
 Store secrets in environment settings, never in this repo.
 
+## Daily med spa outreach (Provahaus)
+
+`/daily-medspa-outreach` finds 20 new US med spas a day, takes the email address
+published on each one's own website, and writes a personalized email offering
+Provahaus's patient-growth service. Emails are saved as Gmail drafts for review
+(`daily.mode` in `config/outreach.yaml`). Fill in the `sender` block (name,
+title, postal address) before sending: US law (CAN-SPAM) requires a postal
+address and an opt-out in each email. Every contact is logged in
+`data/outreach/prospects.csv`; opt-outs go in `data/outreach/suppression.txt`.
+The run needs network access to arbitrary websites (the Full network level).
+
 ## Files
 
 | Path | Purpose |
@@ -49,4 +60,6 @@ Store secrets in environment settings, never in this repo.
 | `data/site-design-system.md` | The site's existing elements, used for every layout |
 | `data/snapshots/` | Raw daily data (Search Console, AI visibility, crawl) |
 | `reports/YYYY-MM-DD/` | Audits, priorities, specs, implementation packets, daily report |
+| `config/outreach.yaml` | Provahaus offer, sender details, daily count, target metros |
+| `data/outreach/` | Prospects contacted, do-not-contact list, metro progress |
 | `scripts/` | Data collection (`gsc_pull.py`, `ai_visibility.py`) |

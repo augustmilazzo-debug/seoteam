@@ -1,0 +1,4 @@
+# Progress through config/outreach.yaml targeting.metros.
+current_metro_index: 0
+exhausted_metros: []
+last_run: null

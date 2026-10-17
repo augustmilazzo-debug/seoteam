@@ -1,0 +1,2 @@
+# Do-not-contact list: one email address or domain per line.
+# Add anyone who replies "unsubscribe", "remove me", "not interested", or bounces.
