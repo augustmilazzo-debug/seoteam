@@ -871,6 +871,7 @@ def job_blog_write(db, c: Client, log, post_id: int, rev: str = ""):
     b.slug, b.excerpt, b.answer_summary = slug(art["slug"] or art["title"]), art["excerpt"], art["answer_summary"]
     b.key_takeaways, b.body, b.faqs = art["key_takeaways"], art["body_markdown"], art["faqs"]
     b.visuals, b.references = art["visuals"], art["references"]
+    b.category = art.get("category") or b.category
     b.status, b.feedback, b.updated_at = "review", "", now()
     db.commit()
     log("Draft ready for your review on the Blog tab")

@@ -510,15 +510,17 @@ def blog_detail(request: Request, bid: int):
         c = b.client
         job = next((j for j in sorted(c.jobs, key=lambda j: -j.id)
                     if j.kind == "blog_write" and (j.params or {}).get("post_id") == b.id), None)
-        checks = blog.checklist(b, sources.domain_of(c.url)) if b.body else []
-        preview = blog.full_html(b, c.profile or {}, include_schema=False) if b.body else ""
+        ctx = blog.site_context(c)
+        checks = blog.checklist(b, sources.domain_of(c.url), c.profile or {}, ctx) if b.body else []
+        preview = blog.full_html(b, c.profile or {}, ctx, include_schema=False) if b.body else ""
+        schema = blog.schema_json(b, c.profile or {}, ctx) if b.body else ""
         faq_text = "\n\n".join(f"Q: {f['question']}\nA: {f['answer']}" for f in b.faqs or [])
         loc_label = locations.get(c, b.location)["label"] if b.location else ""
         similar = overlap.matches(c, b.target_keyword or b.title, b.title,
                                   items=overlap.inventory(c, exclude_post_id=b.id))[:6]
         return render(request, "blog_post.html", c=c, s=client_stats(c), tab="blog", b=b, job=job, checks=checks,
                       loc_label=loc_label, similar=similar, DUPLICATE=overlap.DUPLICATE,
-                      preview=preview, faq_text=faq_text, stages={st: (label, cls) for st, label, cls in BLOG_STAGES},
+                      preview=preview, faq_text=faq_text, schema=schema, ctx=ctx, stages={st: (label, cls) for st, label, cls in BLOG_STAGES},
                       msg=request.query_params.get("msg", ""), err=request.query_params.get("err", ""))
 
 
@@ -582,7 +584,7 @@ def blog_sync(bid: int):
         b = get_or_404(db, BlogPost, bid)
         c = b.client
         try:
-            b.cms_id, b.cms_edit_url = blog.wp_push(c.wp or {}, b, c.profile or {})
+            b.cms_id, b.cms_edit_url, b.cms_check = blog.wp_push(c.wp or {}, b, c.profile or {}, blog.site_context(c))
         except blog.WordPressError as e:
             return RedirectResponse(f"/blog/{bid}?err=" + quote(str(e)), status_code=303)
         b.status, b.synced_at, b.updated_at = "synced", now(), now()
@@ -596,7 +598,7 @@ def blog_export(bid: int):
         b = get_or_404(db, BlogPost, bid)
         page = (f"<!doctype html><html><head><meta charset='utf-8'><title>{html_escape(b.meta_title or b.title)}</title>"
                 f"<meta name='description' content='{html_escape(b.meta_description)}'></head><body>"
-                f"<h1>{html_escape(b.title)}</h1>{blog.full_html(b, b.client.profile or {})}</body></html>")
+                f"<h1>{html_escape(b.title)}</h1>{blog.full_html(b, b.client.profile or {}, blog.site_context(b.client))}</body></html>")
         return HTMLResponse(page, headers={"Content-Disposition": f'attachment; filename="{b.slug or "post"}.html"'})
 
 

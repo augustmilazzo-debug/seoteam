@@ -5,7 +5,7 @@
 {% if err %}<div class="notice"><b>Couldn't send to WordPress:</b> {{ err }}</div>{% endif %}
 <div class="row">
   <div class="grow"><h2 style="margin: 0;">{{ b.title }}</h2>
-    <div class="small muted">{% if loc_label %}<span class="badge b-brand">{{ loc_label }}</span> {% endif %}Target keyword: <b>{{ b.target_keyword or '–' }}</b>{% if b.search_volume %} · {{ b.search_volume }} searches/mo{% endif %}{% if b.supports_url %} · supports <a href="{{ b.supports_url }}" target="_blank" rel="noopener">{{ b.supports_url.split('//', 1)[-1] }}</a>{% endif %}</div></div>
+    <div class="small muted">{% if loc_label %}<span class="badge b-brand">{{ loc_label }}</span> {% endif %}{% if b.category %}Category: <b>{{ b.category }}</b> · {% endif %}Target keyword: <b>{{ b.target_keyword or '–' }}</b>{% if b.search_volume %} · {{ b.search_volume }} searches/mo{% endif %}{% if b.supports_url %} · supports <a href="{{ b.supports_url }}" target="_blank" rel="noopener">{{ b.supports_url.split('//', 1)[-1] }}</a>{% endif %}</div></div>
   <span class="badge {{ stages[b.status][1] }}" style="font-size: 14px;">{{ stages[b.status][0] }}</span>
 </div>
 
@@ -73,7 +73,14 @@
       {% if b.status in ('approved', 'synced') %}
         {% if c.wp and c.wp.get('url') %}
         <form method="post" action="/blog/{{ b.id }}/sync"><button class="primary" style="width: 100%;">{{ 'Update the WordPress draft' if b.cms_id else 'Send to WordPress as a draft' }}</button></form>
-        {% if b.cms_edit_url %}<p class="small"><a href="{{ b.cms_edit_url }}" target="_blank" rel="noopener">Open the draft in WordPress →</a> (sent {{ b.synced_at|ago }})</p>{% endif %}
+        {% if b.cms_edit_url %}<p class="small"><a href="{{ b.cms_edit_url }}" target="_blank" rel="noopener">Open the draft in WordPress →</a> (sent {{ b.synced_at|ago }})</p>
+        {% set ck = b.cms_check or {} %}
+        <div class="small">
+          {% if ck.schema == true %}✅ Schema confirmed in the WordPress draft{% elif ck.schema == false %}⚠️ <b>WordPress removed the schema.</b> Connect with an Administrator account, or paste the schema below into your SEO plugin's custom schema box.{% endif %}
+          {% if ck.seo_fields == false %}<br>⚠️ Paste the SEO title and meta description into Yoast / Rank Math in WordPress (the site doesn't accept them automatically).{% elif ck.seo_fields %}<br>✅ SEO title, description and focus keyword sent{% endif %}
+          {% if ck.category %}<br>✅ Category set: {{ b.category }}{% endif %}
+          <br>📷 Add a featured image in WordPress (used by Google, social shares and Discover).
+        </div>{% endif %}
         {% else %}
         <p class="small">Connect this client's WordPress in <a href="/clients/{{ c.id }}/settings#wordpress">Settings</a> to send drafts with one click. Otherwise use <b>Copy HTML</b> and paste into the editor (WordPress: Code editor; Wix/Squarespace/Webflow: an HTML/embed block).</p>
         {% endif %}
@@ -99,6 +106,16 @@
       {% for ok, label in checks %}<div style="padding: 3px 0;">{{ '✅' if ok else '⚠️' }} {{ label }}</div>{% endfor %}
       <p class="muted" style="margin-bottom: 0;">{{ checks|selectattr(0)|list|length }} of {{ checks|length }} passed</p>
     </div>
+
+    {% if schema %}
+    <h3>Schema markup</h3>
+    <div class="panel small">
+      <p style="margin-top: 0;">Added to the post automatically{% if ctx.has_article_schema %}. This site's SEO plugin already outputs article schema on blog posts, so only the missing types are added{% endif %}.</p>
+      <details><summary>View the JSON-LD</summary><pre style="white-space: pre-wrap; font-size: 12px;">{{ schema }}</pre></details>
+      <button type="button" class="sm" data-copy="schema-json" style="margin-top: 6px;">Copy schema</button>
+      <textarea id="schema-json" style="display: none;">{{ schema }}</textarea>
+    </div>
+    {% endif %}
 
     {% if b.visuals %}
     <h3>Visuals</h3>

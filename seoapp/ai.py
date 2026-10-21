@@ -406,6 +406,7 @@ class Visual(BaseModel):
 
 
 class BlogArticle(BaseModel):
+    category: str  # blog category, usually the treatment family, e.g. "Dermal Fillers"
     title: str
     meta_title: str
     meta_description: str
@@ -445,6 +446,8 @@ show; never before/after unless patient-consented). Every visual needs a caption
 fields that don't apply to a visual's kind empty. Place each visual in body_markdown on its own line \
 as [[visual:1]], [[visual:2]] ... in the order of the visuals list.
 - references: names of the authoritative organizations or documents relied on (no URLs).
+- category: the blog category this belongs in, normally the treatment family (e.g. "Neurotoxins", \
+"Dermal Fillers", "Skin Tightening"); reuse one of the business's service names when it fits.
 
 Write in the business's voice for real patients at an 8th-grade reading level. Use [brackets] for \
 facts you don't have (prices, provider names, years of experience) instead of inventing them."""

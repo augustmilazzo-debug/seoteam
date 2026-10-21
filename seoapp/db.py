@@ -202,6 +202,7 @@ class BlogPost(Base):
     priority: Mapped[int] = mapped_column(Integer, default=3)
     search_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
     location: Mapped[str] = mapped_column(String(100), default="")  # location key it focuses on, "" = all
+    category: Mapped[str] = mapped_column(String(200), default="")  # blog category, usually the treatment
     # Written article
     meta_title: Mapped[str] = mapped_column(String(300), default="")
     meta_description: Mapped[str] = mapped_column(String(500), default="")
@@ -217,6 +218,7 @@ class BlogPost(Base):
     # CMS sync
     cms_id: Mapped[str] = mapped_column(String(50), default="")
     cms_edit_url: Mapped[str] = mapped_column(String(1000), default="")
+    cms_check: Mapped[dict] = mapped_column(JSON, default=dict)  # what was confirmed in the CMS after sending
     compliance: Mapped[dict] = mapped_column(JSON, default=dict)  # {status, issues, checked_at, override}
     synced_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)

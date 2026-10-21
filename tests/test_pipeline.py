@@ -104,12 +104,26 @@ def fake_claude():
                      "values": [6, 12], "unit": "months", "photo_brief": "", "alt_text": "chart"},
                     {"kind": "photo", "title": "", "caption": "c", "columns": [], "rows": [], "labels": [], "values": [], "unit": "",
                      "photo_brief": "Treatment room", "alt_text": "treatment room"}],
-        "references": ["FDA"]})
+        "references": ["FDA"], "category": "Dermal Fillers"})
     mp.setattr(ai, "write_draft", lambda profile, rec, page, feedback="": "# Draft\n\nHello")
     mp.setattr(jobs.sources, "pagespeed", lambda url: {"performance": 42, "lcp_ms": 5200, "cls": 0.2,
                                                        "opportunities": ["Properly size images"], "checked": "x"})
     yield
     mp.undo()
+
+
+def wait_for_jobs(timeout=20):
+    """Let jobs queued by button clicks finish before a test runs the same job directly."""
+    import time as _time
+
+    from seoapp.db import Job
+
+    end = _time.time() + timeout
+    while _time.time() < end:
+        with SessionLocal() as db:
+            if not db.query(Job).filter(Job.status.in_(["queued", "running"])).count():
+                return
+        _time.sleep(0.2)
 
 
 def run(kind, cid, **params):
@@ -263,6 +277,11 @@ class FakeWordPress(http.server.BaseHTTPRequestHandler):
             return self._send(401, {"message": "bad login"})
         if self.path.startswith("/wp-json/wp/v2/users/me"):
             return self._send(200, {"name": "Editor", "roles": ["editor"]})
+        if self.path.startswith("/wp-json/wp/v2/categories"):
+            return self._send(200, [{"id": 7, "name": "Other"}])
+        if self.path.startswith("/wp-json/wp/v2/posts/"):
+            pid = self.path.split("?")[0].rstrip("/").rsplit("/", 1)[-1]
+            return self._send(200, {"id": int(pid), "content": {"raw": self.posts.get(pid, {}).get("content", "")}})
         self._send(404, {"message": "nope"})
 
     def do_POST(self):
@@ -270,6 +289,8 @@ class FakeWordPress(http.server.BaseHTTPRequestHandler):
         if not self._authed():
             return self._send(401, {"message": "bad login"})
         body = _json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path.startswith("/wp-json/wp/v2/categories"):
+            return self._send(201, {"id": 12, "name": body["name"]})
         if "meta" in body:  # like a site without an SEO plugin exposing these fields
             return self._send(400, {"message": "Invalid parameter(s): meta"})
         pid = self.path.rstrip("/").rsplit("/", 1)[-1]
@@ -296,7 +317,9 @@ def test_blog_engine_and_wordpress_sync():
             page = tc.get(f"/blog/{bid}").text
             assert "Quick answer" in page and "<table>" in page and "months" in page and "Add photo" in page
             assert "<script>alert" not in page  # model output is escaped in the preview
-            assert "of 13 passed" in page
+            assert "of 19 passed" in page
+            assert "BlogPosting schema" in page and "Breadcrumb schema" in page and "View the JSON-LD" in page
+            assert 'href="#' in page and "In this article" in page  # table of contents
             r = tc.post(f"/clients/{cid}/wordpress", data={"wp_url": "http://127.0.0.1:8802", "wp_user": "editor",
                                                           "wp_app_password": "wrong", "action": "test"})
             assert "Connection failed" in r.text
@@ -310,6 +333,8 @@ def test_blog_engine_and_wordpress_sync():
             sent = FakeWordPress.posts["100"]
             assert sent["status"] == "draft" and sent["slug"] == "how-long-does-lip-filler-last"
             assert "application/ld+json" in sent["content"] and "FAQPage" in sent["content"]
+            assert sent["categories"] == [12] and '"BlogPosting"' in sent["content"] and "dateModified" in sent["content"]
+            assert "Schema confirmed in the WordPress draft" in r.text and "Category set" in r.text
             tc.post(f"/blog/{bid}/sync")  # second sync updates the same draft
             assert list(FakeWordPress.posts) == ["100"]
             r = tc.post(f"/clients/{cid}/blog/new", data={"title": "Our spring specials", "notes": "x"},
@@ -468,6 +493,7 @@ def test_search_console_connect_and_insights(monkeypatch):
         assert "Connected to sc-domain:glow.example" in r.text
         with SessionLocal() as db:
             assert sources.gsc_ready(db.get(Client, cid))
+        wait_for_jobs()
 
     run("gsc_sync", cid)
     with SessionLocal() as db:
@@ -524,3 +550,27 @@ def test_buttons_queue_jobs_their_handlers_accept():
         for j in queued:
             sig = inspect.signature(jobs.HANDLERS[j.kind])
             sig.bind(None, None, None, **(j.params or {}))  # raises TypeError on an unexpected parameter
+
+
+def test_blog_schema_does_not_duplicate_seo_plugin():
+    import json as _json
+
+    from seoapp import blog
+    from seoapp.db import BlogPost
+
+    post = BlogPost(title="Botox vs Dysport", meta_description="d", target_keyword="botox vs dysport", category="Neurotoxins",
+                    body="## A\n\nx\n\n## B\n\ny\n\n## C\n\nz", faqs=[{"question": "Q?", "answer": "A."}],
+                    secondary_keywords=[], visuals=[])
+    profile = {"business_name": "Glow MedSpa", "is_medical": True, "providers": ["Dr. Jane Kim, MD"]}
+    full = _json.loads(blog.schema_json(post, profile, {"site_url": "https://glow.example/", "blog_url": "https://glow.example/blog/"}))
+    types = [n["@type"] if isinstance(n["@type"], str) else n["@type"][0] for n in full["@graph"]]
+    assert types == ["BlogPosting", "MedicalBusiness", "BreadcrumbList", "FAQPage"]
+    art = full["@graph"][0]
+    assert art["reviewedBy"]["name"] == "Dr. Jane Kim, MD" and art["about"]["@type"] == "MedicalProcedure"
+    assert art["publisher"] == {"@id": "https://glow.example/#organization"}
+    # the site's SEO plugin already outputs Article + BreadcrumbList on posts: only FAQPage is added
+    lean = _json.loads(blog.schema_json(post, profile, {"site_url": "https://glow.example/", "has_article_schema": True,
+                                                         "has_breadcrumb_schema": True}))
+    assert [n["@type"] for n in lean["@graph"]] == ["FAQPage"]
+    html_out = blog.full_html(post, profile, {}, include_schema=False)
+    assert 'id="a"' in html_out and 'href="#a"' in html_out and "Medically reviewed by <strong>Dr. Jane Kim, MD</strong>" in html_out
