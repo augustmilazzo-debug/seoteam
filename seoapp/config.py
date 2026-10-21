@@ -14,11 +14,16 @@ if DATABASE_URL.startswith("postgres://"):  # Render/Heroku style URL
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip().strip('"').strip("'")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
 
-DATAFORSEO_LOGIN = os.environ.get("DATAFORSEO_LOGIN", "")
-DATAFORSEO_PASSWORD = os.environ.get("DATAFORSEO_PASSWORD", "")
+def _clean(value: str) -> str:
+    """Trim spaces, line breaks and wrapping quotes that sneak in when pasting keys."""
+    return value.strip().strip('"').strip("'").strip()
+
+
+DATAFORSEO_LOGIN = _clean(os.environ.get("DATAFORSEO_LOGIN", ""))
+DATAFORSEO_PASSWORD = _clean(os.environ.get("DATAFORSEO_PASSWORD", ""))
 
 # One Google service account serves every client: add its email as a user on
 # each client's Search Console property.
