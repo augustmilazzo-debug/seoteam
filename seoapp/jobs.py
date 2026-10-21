@@ -832,7 +832,8 @@ def step_blog(db, c: Client, log, force=False):
         log(f"Skipped {len(skipped)} idea(s) that would compete with existing content: " + "; ".join(skipped))
 
 
-def job_blog_write(db, c: Client, log, post_id: int):
+def job_blog_write(db, c: Client, log, post_id: int, rev: str = ""):
+    """rev is the rewrite request (so a new request isn't merged with a queued one)."""
     if not ai.enabled():
         raise RuntimeError("Add ANTHROPIC_API_KEY to write posts")
     b = db.get(BlogPost, post_id)

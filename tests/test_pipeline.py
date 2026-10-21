@@ -491,3 +491,36 @@ def test_search_console_connect_and_insights(monkeypatch):
         c = db.get(Client, cid)
         assert next(r for r in c.recommendations if r.fingerprint == f"rule:gsc_ctr:{botox}").status == "resolved"
         assert len([k for k in c.keywords if k.keyword == "russian lip filler newport"]) == 1  # not re-added
+
+
+def test_buttons_queue_jobs_their_handlers_accept():
+    """Every job a button queues must run with the exact parameters the button stored."""
+    import inspect
+
+    from fastapi.testclient import TestClient
+    from seoapp.db import BlogPost, Job, Page
+    from seoapp.main import app
+
+    with SessionLocal() as db:
+        c = db.scalars(__import__("sqlalchemy").select(Client)).first()
+        cid = c.id
+        bid = next(b.id for b in c.blog_posts)
+        pid = next(p.id for p in c.pages if p.url.endswith("/services/botox/"))
+        rid = next(r.id for r in c.recommendations if r.category == "content")
+        start = max(j.id for j in db.query(Job).all())
+    with TestClient(app) as tc:
+        tc.post(f"/blog/{bid}/write", data={"feedback": "shorter please"})
+        tc.post(f"/blog/{bid}/write", data={"feedback": ""})
+        tc.post(f"/pages/{pid}/review")
+        tc.post(f"/pages/{pid}/ranks")
+        tc.post(f"/recommendations/{rid}/draft", data={"feedback": "x"})
+        tc.post(f"/clients/{cid}/gbp/posts?loc=newport-beach")
+        tc.post(f"/clients/{cid}/gbp", data={"primary_category": "Medical spa"})
+        for kind in ("audit", "ranks", "keywords", "profile", "blog", "page_keywords", "gsc_sync"):
+            tc.post(f"/clients/{cid}/run/{kind}")
+    with SessionLocal() as db:
+        queued = [j for j in db.query(Job).all() if j.id > start]
+        assert len(queued) >= 10
+        for j in queued:
+            sig = inspect.signature(jobs.HANDLERS[j.kind])
+            sig.bind(None, None, None, **(j.params or {}))  # raises TypeError on an unexpected parameter
