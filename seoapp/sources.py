@@ -43,18 +43,46 @@ def dfs_enabled() -> bool:
     return bool(config.DATAFORSEO_LOGIN and config.DATAFORSEO_PASSWORD)
 
 
+class DataForSEOAccountError(RuntimeError):
+    """Login or billing problem: every further call would fail the same way."""
+
+
+def _account_problem(code, message: str) -> str | None:
+    code = int(code or 0)
+    if code in (40100, 40101, 40102, 40103, 40104) or code == 401:
+        return ("DataForSEO rejected the login. In Render → Environment, check DATAFORSEO_LOGIN is your API login "
+                "(usually your email) and DATAFORSEO_PASSWORD is the API password from dataforseo.com → API Access "
+                f"(not your website password). DataForSEO said: {message}")
+    if code in (40200, 40201, 40202, 40210) or code == 402:
+        return f"DataForSEO account has no funds or the plan doesn't allow this. Add funds at dataforseo.com. DataForSEO said: {message}"
+    return None
+
+
 def _dfs(path: str, payload: list) -> list:
-    r = requests.post(
-        f"https://api.dataforseo.com/v3/{path}",
-        auth=(config.DATAFORSEO_LOGIN, config.DATAFORSEO_PASSWORD),
-        json=payload, timeout=120,
-    )
-    r.raise_for_status()
-    data = r.json()
+    try:
+        r = requests.post(
+            f"https://api.dataforseo.com/v3/{path}",
+            auth=(config.DATAFORSEO_LOGIN.strip(), config.DATAFORSEO_PASSWORD.strip()),
+            json=payload, timeout=120,
+        )
+    except requests.RequestException as e:
+        raise RuntimeError(f"Could not reach DataForSEO: {e}") from e
+    try:
+        data = r.json()
+    except ValueError:
+        data = {}
+    problem = _account_problem(data.get("status_code") or r.status_code, data.get("status_message") or r.text[:200])
+    if problem:
+        raise DataForSEOAccountError(problem)
+    if r.status_code >= 400 or data.get("status_code") not in (20000, None):
+        raise RuntimeError(f"DataForSEO error {data.get('status_code') or r.status_code}: {data.get('status_message') or r.text[:200]}")
     out = []
     for task in data.get("tasks") or []:
+        problem = _account_problem(task.get("status_code"), task.get("status_message", ""))
+        if problem:
+            raise DataForSEOAccountError(problem)
         if task.get("status_code") != 20000:
-            raise RuntimeError(f"DataForSEO {path}: {task.get('status_message')}")
+            raise RuntimeError(f"DataForSEO {path}: {task.get('status_message')} (code {task.get('status_code')})")
         out.append(task.get("result") or [])
     return out
 
@@ -90,7 +118,9 @@ def organic_rank(keyword: str, domain: str, location_name: str) -> dict:
     task = {"keyword": keyword, "language_code": "en", "device": "mobile", "depth": RANK_DEPTH, **_loc(location_name)}
     try:
         res = _dfs("serp/google/organic/live/advanced", [task])
-    except RuntimeError:
+    except DataForSEOAccountError:
+        raise
+    except RuntimeError:  # usually an unrecognized location name: fall back to the whole US
         task.pop("location_name", None)
         task["location_code"] = US
         res = _dfs("serp/google/organic/live/advanced", [task])
@@ -112,6 +142,8 @@ def maps_rank(keyword: str, domain: str, business_name: str, location_name: str)
     task = {"keyword": keyword, "language_code": "en", "depth": 20, **_loc(location_name)}
     try:
         res = _dfs("serp/google/maps/live/advanced", [task])
+    except DataForSEOAccountError:
+        raise
     except RuntimeError:
         return None
     items = (res[0][0].get("items") if res and res[0] else None) or []

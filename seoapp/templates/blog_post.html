@@ -9,6 +9,16 @@
   <span class="badge {{ stages[b.status][1] }}" style="font-size: 14px;">{{ stages[b.status][0] }}</span>
 </div>
 
+{% set dup = similar|selectattr('score', 'ge', DUPLICATE)|list %}
+{% if similar %}
+<div class="notice {{ '' if dup else 'info' }}" style="margin-top: 14px;">
+  {% if dup %}<b>Possible keyword cannibalization:</b> this post targets the same search as existing content below. Publishing both would make them compete. Consider improving the existing piece instead, or change this post's keyword and angle so it covers something different.
+  {% else %}<b>Related content on the site:</b> the writer links to these and keeps this post on a different angle.{% endif %}
+  <ul style="margin: 6px 0 0;">{% for r in similar %}<li>{{ r.kind|capitalize }}: {% if r.url.startswith('http') %}<a href="{{ r.url }}" target="_blank" rel="noopener">{{ r.label }}</a>{% else %}<a href="{{ r.url }}">{{ r.label }}</a>{% endif %}
+    {% if r.keywords %}<span class="muted">(targets {{ r.keywords[:2]|join(', ') }})</span>{% endif %} · <b>{{ (r.score * 100)|int }}% overlap</b></li>{% endfor %}</ul>
+</div>
+{% endif %}
+
 {% if job and job.status in ('queued', 'running') %}
 <div class="notice info" style="margin-top: 14px;">Claude is writing this post (usually 2-4 minutes). This page refreshes on its own. <a href="/jobs/{{ job.id }}">Progress</a></div>
 <meta http-equiv="refresh" content="10">

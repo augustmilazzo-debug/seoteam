@@ -275,6 +275,10 @@ credentials, reviews), and conversion (clear booking CTA). Skip anything the pag
 
 Use category "on_page" for title/meta/heading/schema/link tweaks and "content" for new copy or sections.
 
+Keep this page focused on ITS target keywords. Never recommend adding a section whose topic is the \
+target of another page on the site (see the site page list with each page's targets): link to that page \
+instead. Never suggest retargeting this page to another page's keyword.
+
 BUSINESS: {_j({k: profile.get(k) for k in ("business_name", "business_type", "is_medical", "locations", "service_areas", "unique_selling_points", "providers", "brand_voice", "booking_url")})}
 
 TARGET KEYWORDS FOR THIS PAGE (with current Google position if known):
@@ -294,7 +298,7 @@ OTHER PAGES ON THE SITE (for internal links):
     return _parse(PageReview, prompt).model_dump()
 
 
-def new_page_briefs(profile: dict, keywords: list[dict], site_pages: list[str]) -> list[dict]:
+def new_page_briefs(profile: dict, keywords: list[dict], site_pages: list[str], inventory: list[dict] | None = None) -> list[dict]:
     prompt = f"""These target keywords have no page on the site that can rank for them. For each \
 group of closely related keywords, recommend one new page (category "new_page"). In details give: the \
 URL slug, title tag, meta description, H1, a full section-by-section outline with the key points per \
@@ -303,11 +307,14 @@ add, and which existing pages should link to it. If two keywords belong on one p
 location pages for a second office or service area, make the content genuinely unique to that area \
 (neighborhoods, directions, parking, local landmarks), never a city-swapped copy.
 
+{NO_CANNIBALIZE} If an existing page could rank for a keyword with better content, recommend expanding \
+that page instead (category "content", naming the page URL in details) rather than creating a new one.
+
 BUSINESS: {_j(profile)}
 
 KEYWORDS WITHOUT A PAGE: {_j(keywords)}
 
-EXISTING PAGES: {_j(site_pages[:150])}"""
+CONTENT INVENTORY: {_j(inventory or site_pages[:150])}"""
     return [r.model_dump() for r in _parse(RecList, prompt, effort="high").recommendations]
 
 
@@ -343,7 +350,14 @@ class BlogPlan(BaseModel):
     ideas: list[BlogIdea]
 
 
-def blog_plan(profile: dict, keywords: list[dict], existing_titles: list[str], questions: list[str], n: int = 6) -> list[dict]:
+NO_CANNIBALIZE = """NO CANNIBALIZATION: the site must never have two pieces competing for the same search. \
+Every topic you propose must answer a search intent that NO existing page, post or planned idea in the \
+content inventory already targets (compare against their titles AND their target keywords; a different \
+wording of the same question counts as the same topic). If a valuable topic is already covered, do not \
+propose it."""
+
+
+def blog_plan(profile: dict, keywords: list[dict], inventory: list[dict], questions: list[str], n: int = 6) -> list[dict]:
     prompt = f"""Plan {n} blog posts that will rank on Google and get cited by AI assistants (ChatGPT, \
 Gemini, Claude, Google AI Overviews), bringing local people who are researching treatments to the \
 business and pushing authority to the money pages.
@@ -352,7 +366,9 @@ Choose topics from real pre-booking questions: cost in [city], how long results 
 recovery and downtime, what to expect, who it's for, safety, seasonal timing, myths. Each post targets \
 one keyword that a blog can realistically win (usually a question or comparison, not the service + \
 city keyword that the service page targets). Prefer topics that support the highest-priority target \
-keywords. Never duplicate an existing post. priority 5 = most valuable.
+keywords. priority 5 = most valuable.
+
+{NO_CANNIBALIZE}
 
 supports_url: the existing service page this post should link to (from the target keywords' pages).
 
@@ -367,7 +383,7 @@ TARGET KEYWORDS AND THEIR PAGES: {_j(keywords[:60])}
 
 QUESTIONS PEOPLE ALREADY SEARCH (Search Console): {_j(questions[:40])}
 
-EXISTING POSTS AND IDEAS: {_j(existing_titles[:200])}"""
+CONTENT INVENTORY (live pages, blog posts, planned ideas and what they target): {_j(inventory)}"""
     return [i.model_dump() for i in _parse(BlogPlan, prompt, effort="high").ideas]
 
 
@@ -434,9 +450,17 @@ Write in the business's voice for real patients at an 8th-grade reading level. U
 facts you don't have (prices, provider names, years of experience) instead of inventing them."""
 
 
-def write_blog(profile: dict, post: dict, site_pages: list[str], competitors: list[dict]) -> dict:
+def write_blog(profile: dict, post: dict, site_pages: list[str], competitors: list[dict],
+               related: list[dict] | None = None) -> dict:
+    related_part = ""
+    if related:
+        related_part = f"""
+RELATED CONTENT ALREADY ON THE SITE: this post must NOT compete with these. Stay tightly on this post's \
+own keyword and angle, don't re-explain what these pages cover beyond a one-line summary, and link to \
+them with descriptive anchor text where a reader would want more: {_j(related)}
+"""
     prompt = f"""{BLOG_RULES}
-
+{related_part}
 BUSINESS: {_j(profile)}
 
 POST TO WRITE: {_j(post)}

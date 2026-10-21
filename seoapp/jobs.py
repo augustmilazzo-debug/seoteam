@@ -11,7 +11,7 @@ import traceback
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import select
 
-from . import ai, audit, config, crawler, locations, scoring, sources
+from . import ai, audit, config, crawler, locations, overlap, scoring, sources
 from .db import Alert, BlogPost, Client, GbpPost, Job, Keyword, Page, Recommendation, SessionLocal, now
 
 REVIEW_CYCLE_DAYS = 28  # every ranking page gets a full AI review at least this often
@@ -71,7 +71,7 @@ def worker_loop():
                 job = db.get(Job, job.id)
                 log.job = job
                 log(f"FAILED: {e}")
-                log(traceback.format_exc()[-3000:])
+                log("Technical details:\n" + traceback.format_exc()[-3000:])
                 job.status = "failed"
             job.finished_at = now()
             db.commit()
@@ -155,6 +155,16 @@ def page_keywords(c: Client) -> dict[str, list[Keyword]]:
     for kws in out.values():
         kws.sort(key=lambda k: (k.role != "primary", -k.priority, -(k.search_volume or 0)))
     return out
+
+
+def site_page_list(c: Client) -> list[str]:
+    """'url | title | targets: ...' for every page, so the AI knows which page owns which topic."""
+    targets: dict[str, list[str]] = {}
+    for k in c.keywords:
+        if k.target_url:
+            targets.setdefault(k.target_url, []).append(k.keyword)
+    return [f"{x.url} | {x.title}" + (f" | targets: {', '.join(targets[x.url][:3])}" if x.url in targets else "")
+            for x in ranked_pages(c)]
 
 
 def slug(s: str) -> str:
@@ -491,7 +501,7 @@ def _review_page(db, c: Client, p: Page, kws: list[Keyword], log):
     main = kws[0]
     competitors = (main.analysis or {}).get("competitors") or _competitor_summaries(main, sources.domain_of(c.url), log)
     gsc = [r for r in (c.gsc_cache or {}).get("rows", []) if r["page"] == p.url]
-    site_pages = [f"{x.url} | {x.title}" for x in ranked_pages(c)]
+    site_pages = site_page_list(c)
     log(f"Reviewing {p.url} for {', '.join(k.keyword for k in kws)}")
     review = ai.optimize_page(c.profile or {}, page_dict(p), [kw_view(k) for k in kws], competitors, gsc, site_pages)
     for r in [r for r in c.recommendations if r.page_url == p.url and r.fingerprint.startswith("ai:page:") and r.status == "open"]:
@@ -560,14 +570,35 @@ def step_new_pages(db, c: Client, log):
     gaps = [k for k in c.keywords if k.tracked and not k.target_url and k.keyword.lower() not in covered]
     if not gaps:
         return
-    gaps = sorted(gaps, key=lambda k: -k.priority)[:8]
+    pages_only = [it for it in overlap.inventory(c) if it["kind"] == "page"]
+    real_gaps = []
+    for k in sorted(gaps, key=lambda k: -k.priority):
+        hit = overlap.matches(c, k.keyword, items=pages_only, threshold=overlap.DUPLICATE)
+        if hit:  # an existing page already covers this search: strengthen it, don't add a competitor
+            k.target_url = hit[0]["url"]
+            log(f"'{k.keyword}' is already covered by {hit[0]['url']}; assigned it there instead of a new page")
+        else:
+            real_gaps.append(k)
+    db.commit()
+    gaps = real_gaps[:8]
+    if not gaps:
+        return
     log(f"Planning new pages for {len(gaps)} keyword(s) with no page")
-    recs = ai.new_page_briefs(c.profile or {}, [kw_view(k) for k in gaps], [f"{p.url} | {p.title}" for p in ranked_pages(c)])
+    recs = ai.new_page_briefs(c.profile or {}, [kw_view(k) for k in gaps], site_page_list(c), overlap.prompt_inventory(c))
     prio = {k.keyword.lower(): k.priority for k in gaps}
+    items = overlap.inventory(c)
     for r in recs:
         kw = (r.get("keyword") or "").lower()
-        upsert_rec(db, c, {**r, "category": "new_page", "fingerprint": f"ai:new:{slug(kw or r['title'])}",
+        cat = "content" if r["category"] == "content" else "new_page"
+        if cat == "new_page":
+            dup = overlap.matches(c, kw or r["title"], r["title"], items=items, threshold=overlap.DUPLICATE)
+            if dup:
+                log(f"Skipped new page '{r['title']}': overlaps {dup[0]['label']} ({dup[0]['url']})")
+                continue
+        upsert_rec(db, c, {**r, "category": cat, "fingerprint": f"ai:new:{slug(kw or r['title'])}",
                            "needs_approval": True}, prio.get(kw, 3))
+        items.append({"kind": "planned page", "label": r["title"], "url": "", "texts": [r["title"]],
+                      "keywords": [kw] if kw else []})
     db.commit()
 
 
@@ -592,18 +623,39 @@ def step_blog(db, c: Client, log, force=False):
     kws = [{**kw_view(k), "page": url} for url, ks in by_page.items() for k in ks]
     kws.sort(key=lambda k: (-k["priority"], -(k["search_volume"] or 0)))
     questions = sorted({r["query"] for r in (c.gsc_cache or {}).get("rows", []) if QUESTION.search(r["query"])})
-    existing = [b.title for b in c.blog_posts]
-    existing += [p.title for p in c.pages if re.search(r"/(blog|news|articles?|posts?)/|/\d{4}/\d{2}/", p.url)]
     log("Planning blog posts from the target keywords")
-    ideas = ai.blog_plan(c.profile or {}, kws, existing, questions)
+    ideas = ai.blog_plan(c.profile or {}, kws, overlap.prompt_inventory(c), questions)
     valid = {p.url for p in c.pages}
-    have = {b.target_keyword.lower() for b in c.blog_posts if b.target_keyword}
-    added = []
+    items = overlap.inventory(c)
+    domain = sources.domain_of(c.url)
+    added, skipped = [], []
     for i in ideas:
         kw = i["target_keyword"].strip().lower()
-        if kw in have:
+        dup = overlap.matches(c, kw, i["title"], items=items, threshold=overlap.DUPLICATE)
+        if dup:
+            skipped.append(f"'{i['title']}' (overlaps {dup[0]['kind']}: {dup[0]['label']})")
             continue
-        have.add(kw)
+        if sources.dfs_enabled():
+            try:  # does Google already rank one of our pages for this search?
+                org = sources.organic_rank(kw, domain, c.rank_location)
+            except sources.DataForSEOAccountError:
+                raise
+            except Exception:
+                org = {}
+            pos = org.get("position")
+            ranking = next((it for it in items if it["url"].rstrip("/") == (org.get("url") or "").rstrip("/")), None)
+            on_topic = ranking and overlap.matches(c, kw, i["title"], items=[ranking], threshold=overlap.SIMILAR)
+            if pos and (pos <= 10 or (pos <= 20 and on_topic)):
+                skipped.append(f"'{i['title']}' (the site already ranks #{org['position']} with {org['url']})")
+                upsert_rec(db, c, {
+                    "fingerprint": f"ai:strengthen:{slug(kw)}", "category": "content", "keyword": kw,
+                    "page_url": org["url"], "title": f"Strengthen {org['url'].split('//', 1)[-1]} for “{kw}”",
+                    "details": f"Instead of a new blog post, improve the page that already ranks **#{org['position']}** for "
+                               f"“{kw}” so the site doesn't split its strength across two pages.\n\n"
+                               f"Suggested angle from the blog planner: {i['angle']}\n\nOutline to fold in:\n\n{i['outline']}",
+                    "impact": 6, "effort": 4, "confidence": 0.7, "needs_approval": True}, i["priority"])
+                continue
+        items.append({"kind": "blog idea", "label": i["title"], "url": "", "texts": [i["title"]], "keywords": [kw]})
         loc_key = next((l["key"] for l in locations.all_for(c) if i.get("location") and
                         i["location"].lower() in (l.get("city") or l["label"]).lower()), "")
         b = BlogPost(client_id=c.id, source="ai", title=i["title"], target_keyword=kw, location=loc_key,
@@ -622,6 +674,8 @@ def step_blog(db, c: Client, log, force=False):
         except Exception as e:
             log(f"Blog keyword volumes unavailable: {e}")
     log(f"Added {len(added)} blog idea(s)")
+    if skipped:
+        log(f"Skipped {len(skipped)} idea(s) that would compete with existing content: " + "; ".join(skipped))
 
 
 def job_blog_write(db, c: Client, log, post_id: int):
@@ -646,9 +700,14 @@ def job_blog_write(db, c: Client, log, post_id: int):
             "location_focus": ({k: v for k, v in locations.get(c, b.location).items() if k in ("label", "address", "service_areas")}
                                if b.location else "all locations"),
             "previous_draft": b.body[:6000] if b.feedback and b.body else ""}
+    related = overlap.matches(c, b.target_keyword or b.title, b.title, items=overlap.inventory(c, exclude_post_id=b.id))
+    for r in related:
+        if r["score"] >= overlap.DUPLICATE:
+            log(f"Warning: this topic overlaps {r['kind']} '{r['label']}' ({r['url']}). Writing it to be clearly different.")
     log(f"Writing '{b.title}' (usually 2-4 minutes)")
     try:
-        art = ai.write_blog(c.profile or {}, post, [f"{p.url} | {p.title}" for p in ranked_pages(c)], competitors)
+        art = ai.write_blog(c.profile or {}, post, site_page_list(c), competitors,
+                            [{"title": r["label"], "url": r["url"], "targets": r["keywords"]} for r in related[:8]])
     except Exception:
         b.status = "review" if b.body else "idea"
         db.commit()
@@ -741,7 +800,7 @@ def step_ranks(db, c: Client, log, page_url: str = ""):
     maps_seen: dict[str, dict[str, int]] = {l["key"]: {} for l in locs}
     log(f"Checking {len(tracked)} keyword(s) on Google (top {sources.RANK_DEPTH}) and Maps (local keywords)"
         + (f" across {len(locs)} locations" if len(locs) > 1 else ""))
-    alerts = 0
+    alerts = failures = checked = 0
     for k in tracked:
         place, check_locs = locations.rank_location_for(c, k)
         local = is_local(k) or bool(locations.city_in_keyword(c, k))
@@ -760,9 +819,15 @@ def step_ranks(db, c: Client, log, page_url: str = ""):
                     for title, _ in org.get("local_pack", []):
                         if name.lower() not in title.lower():
                             maps_seen[l["key"]][title] = maps_seen[l["key"]].get(title, 0) + 1
+        except sources.DataForSEOAccountError:
+            raise  # login/billing problem: stop and show the reason instead of failing every keyword
         except Exception as e:
             log(f"Rank check failed for '{k.keyword}': {e}")
+            failures += 1
+            if failures >= 5 and checked == 0:
+                raise RuntimeError(f"The first {failures} rank checks all failed. Last error: {e}")
             continue
+        checked += 1
         org, maps = primary
         alert = _record_position(k, org["position"], maps, org["url"], "dataforseo")
         if alert:

@@ -14,7 +14,7 @@ from markdown_it import MarkdownIt
 from sqlalchemy import select
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import audit, blog, config, crawler, jobs, locations, sources
+from . import audit, blog, config, crawler, jobs, locations, overlap, sources
 from .db import BlogPost, Client, GbpPost, Job, Keyword, Page, Recommendation, SessionLocal, init_db, now
 
 
@@ -131,6 +131,17 @@ def client_stats(c: Client) -> dict:
         "running": next((j for j in sorted(c.jobs, key=lambda j: -j.id) if j.status in ("queued", "running")), None),
         "last_job": next((j for j in sorted(c.jobs, key=lambda j: -j.id)), None),
     }
+
+
+def job_error(j) -> str:
+    """The plain-English reason a job failed (its FAILED: line)."""
+    for line in reversed((j.log or "").splitlines()):
+        if "FAILED:" in line:
+            return line.split("FAILED:", 1)[1].strip()[:400]
+    return ""
+
+
+templates.env.filters["job_error"] = job_error
 
 
 def render(request, name, **ctx):
@@ -502,8 +513,10 @@ def blog_detail(request: Request, bid: int):
         preview = blog.full_html(b, c.profile or {}, include_schema=False) if b.body else ""
         faq_text = "\n\n".join(f"Q: {f['question']}\nA: {f['answer']}" for f in b.faqs or [])
         loc_label = locations.get(c, b.location)["label"] if b.location else ""
+        similar = overlap.matches(c, b.target_keyword or b.title, b.title,
+                                  items=overlap.inventory(c, exclude_post_id=b.id))[:6]
         return render(request, "blog_post.html", c=c, s=client_stats(c), tab="blog", b=b, job=job, checks=checks,
-                      loc_label=loc_label,
+                      loc_label=loc_label, similar=similar, DUPLICATE=overlap.DUPLICATE,
                       preview=preview, faq_text=faq_text, stages={st: (label, cls) for st, label, cls in BLOG_STAGES},
                       msg=request.query_params.get("msg", ""), err=request.query_params.get("err", ""))
 

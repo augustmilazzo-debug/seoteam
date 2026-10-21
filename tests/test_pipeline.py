@@ -73,7 +73,9 @@ def fake_claude():
          ("botox newport beach" if "botox/" in p["url"] and "blog" not in p["url"] else "glow " + p["url"].rstrip("/").rsplit("/", 1)[-1].replace(":", "")),
          "secondary_keywords": ["botox cost newport beach"] if p["url"].endswith("/services/botox/") else [],
          "priority": 4, "location": "Newport Beach"} for p in pages])
-    mp.setattr(ai, "new_page_briefs", lambda profile, kws, pages: [rec("Create an Irvine Botox page", "new_page", "botox irvine")])
+    mp.setattr(ai, "new_page_briefs", lambda profile, kws, pages, inventory=None: [
+        rec("Create an Irvine Botox page", "new_page", "botox irvine"),
+        rec("Create a Botox Newport Beach page", "new_page", "botox newport beach")])  # duplicate of a live page
     mp.setattr(ai, "blog_ideas", lambda profile, kws, titles, n=6: [rec(f"Blog idea {i}", "blog") for i in range(3)])
     mp.setattr(ai, "gbp_audit", lambda profile, gbp, kws, comps: [rec("Add secondary categories", "gbp")])
     mp.setattr(ai, "gbp_posts", lambda profile, kws, recent, n=8, month_hint="", location=None: [
@@ -84,8 +86,11 @@ def fake_claude():
          "secondary_keywords": [], "search_intent": "informational", "angle": "Top question", "outline": "## A",
          "supports_url": BASE + "services/lip-filler/", "priority": 5},
         {"title": "Botox vs Dysport", "target_keyword": "botox vs dysport", "secondary_keywords": [],
-         "search_intent": "comparison", "angle": "Comparison", "outline": "## B", "supports_url": "", "priority": 4}])
-    mp.setattr(ai, "write_blog", lambda profile, post, pages, comps: {
+         "search_intent": "comparison", "angle": "Comparison", "outline": "## B", "supports_url": "", "priority": 4},
+        {"title": "How Long Does Botox Last? A Guide", "target_keyword": "how long does botox last",  # live post exists
+         "secondary_keywords": [], "search_intent": "informational", "angle": "x", "outline": "", "supports_url": "",
+         "priority": 4}])
+    mp.setattr(ai, "write_blog", lambda profile, post, pages, comps, related=None: {
         "title": "How Long Does Lip Filler Last? A Newport Beach Guide", "meta_title": "How Long Does Lip Filler Last? | Glow MedSpa",
         "meta_description": "Lip filler usually lasts 6-12 months. Learn what affects longevity, how to make results last, and when to book a touch-up in Newport Beach.",
         "slug": "how-long-does-lip-filler-last", "excerpt": "x",
@@ -138,7 +143,9 @@ def test_full_pipeline_and_ui():
         assert {"botox newport beach", "lip filler newport beach", "botox irvine", "botox cost newport beach"} <= {k.keyword for k in tracked}
         cats = {r.category for r in c.recommendations}
         assert {"on_page", "content", "new_page"} <= cats
-        assert len([b for b in c.blog_posts if b.status == "idea"]) == 2
+        assert {b.target_keyword for b in c.blog_posts} == {"how long does lip filler last", "botox vs dysport"}
+        new_pages = [r for r in c.recommendations if r.category == "new_page"]
+        assert [r.keyword for r in new_pages] == ["botox irvine"]  # the duplicate of /services/botox/ was dropped
         # Scores are sorted sensibly: a critical noindex outranks a missing lang attribute
         assert all(0 <= r.score <= 100 for r in c.recommendations)
         broken = next(r for r in c.recommendations if r.fingerprint == "tech:broken_links")
@@ -361,3 +368,59 @@ def test_multiple_locations():
             assert locations.gbp_for(c, "newport-beach")["primary_category"] == "Medical spa"
         assert tc.get(f"/clients/{cid}/blog").status_code == 200
         assert tc.get(f"/clients/{cid}/settings").status_code == 200
+
+
+def test_overlap_guard_flags_duplicate_manual_post():
+    from fastapi.testclient import TestClient
+    from seoapp import overlap
+    from seoapp.main import app
+
+    with SessionLocal() as db:
+        c = db.scalars(__import__("sqlalchemy").select(Client)).first()
+        cid = c.id
+        hits = overlap.matches(c, "how long does botox last", "How long does Botox last?")
+        assert hits and hits[0]["url"].endswith("/blog/how-long-does-botox-last/") and hits[0]["score"] == 1.0
+        assert not overlap.matches(c, "botox vs dysport", "Botox vs Dysport", threshold=overlap.DUPLICATE,
+                                   items=[i for i in overlap.inventory(c) if i["kind"] == "page"])
+    with TestClient(app) as tc:
+        r = tc.post(f"/clients/{cid}/blog/new", data={"title": "How long does Botox last?",
+                                                     "target_keyword": "how long does botox last"})
+        assert "Possible keyword cannibalization" in r.text and "100% overlap" in r.text
+        r = tc.post(f"/clients/{cid}/blog/new", data={"title": "Is Botox safe while breastfeeding?",
+                                                     "target_keyword": "botox breastfeeding"})
+        assert "Possible keyword cannibalization" not in r.text
+
+
+def test_dataforseo_errors_are_explained(monkeypatch):
+    from seoapp import sources
+
+    class Resp:
+        def __init__(self, status, body):
+            self.status_code, self._body, self.text = status, body, str(body)
+
+        def json(self):
+            return self._body
+
+    monkeypatch.setattr(config, "DATAFORSEO_LOGIN", "me@x.com")
+    monkeypatch.setattr(config, "DATAFORSEO_PASSWORD", "pw")
+    # wrong API password: DataForSEO answers HTTP 401 with status 40100
+    monkeypatch.setattr(sources.requests, "post", lambda *a, **k: Resp(401, {"status_code": 40100, "status_message": "You are not authorized"}))
+    with pytest.raises(sources.DataForSEOAccountError, match="API password"):
+        sources.organic_rank("botox newport beach", "x.com", "Newport Beach,California,United States")
+    # no funds: reported inside the task
+    monkeypatch.setattr(sources.requests, "post", lambda *a, **k: Resp(200, {"status_code": 20000, "tasks": [
+        {"status_code": 40200, "status_message": "Payment Required."}]}))
+    with pytest.raises(sources.DataForSEOAccountError, match="no funds"):
+        sources.maps_rank("botox", "x.com", "X", "")
+    # unknown location falls back to the US instead of failing
+    calls = []
+
+    def post(url, json, **k):
+        calls.append(json[0])
+        if "location_name" in json[0]:
+            return Resp(200, {"status_code": 20000, "tasks": [{"status_code": 40501, "status_message": "Invalid Field: 'location_name'."}]})
+        return Resp(200, {"status_code": 20000, "tasks": [{"status_code": 20000, "result": [{"items": [
+            {"type": "organic", "rank_group": 4, "domain": "www.x.com", "url": "https://x.com/botox/", "title": "t"}]}]}]})
+    monkeypatch.setattr(sources.requests, "post", post)
+    res = sources.organic_rank("botox", "x.com", "Nowhere,Nope,United States")
+    assert res["position"] == 4 and calls[-1]["location_code"] == sources.US

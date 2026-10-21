@@ -17,7 +17,8 @@
 <div class="notice info" style="margin-top: 14px;"><b>{{ JOB_LABELS.get(s.running.kind, s.running.kind) }}</b> is {{ s.running.status }}… this page refreshes automatically.
   <a href="/jobs/{{ s.running.id }}">Watch progress</a></div>
 {% elif s.last_job and s.last_job.status == 'failed' %}
-<div class="notice" style="margin-top: 14px;">The last job ({{ JOB_LABELS.get(s.last_job.kind) }}) failed. <a href="/jobs/{{ s.last_job.id }}">See what happened</a></div>
+<div class="notice" style="margin-top: 14px;"><b>The last {{ JOB_LABELS.get(s.last_job.kind, 'job')|lower }} failed.</b>
+  {% set why = s.last_job|job_error %}{% if why %}{{ why }}{% endif %} <a href="/jobs/{{ s.last_job.id }}">Full log</a></div>
 {% elif s.last_job and s.last_job.status == 'warning' %}
 <div class="notice" style="margin-top: 14px;">The last {{ JOB_LABELS.get(s.last_job.kind)|lower }} finished, but some steps were skipped. <a href="/jobs/{{ s.last_job.id }}">See which</a></div>
 {% endif %}
