@@ -163,3 +163,16 @@ def test_full_pipeline_and_ui():
         assert r.status_code == 303
         assert "hydrafacial newport beach" in tc.get(f"/clients/{cid}/keywords").text
         assert "Spring Botox refresh" in tc.get(f"/clients/{cid}/gbp").text
+
+
+def test_login_required_when_password_set(monkeypatch):
+    from fastapi.testclient import TestClient
+    from seoapp.main import app
+
+    monkeypatch.setattr(config, "APP_PASSWORD", "secret")
+    with TestClient(app) as tc:
+        r = tc.get("/", follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == "/login"
+        assert tc.post("/login", data={"password": "wrong"}).status_code == 401
+        assert tc.post("/login", data={"password": "secret"}, follow_redirects=False).status_code == 303
+        assert tc.get("/").status_code == 200

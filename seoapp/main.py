@@ -24,7 +24,6 @@ async def lifespan(app):
 
 
 app = FastAPI(title="SEO Command Center", lifespan=lifespan)
-app.add_middleware(SessionMiddleware, secret_key=config.SECRET_KEY, max_age=60 * 60 * 24 * 30, https_only=False)
 app.mount("/static", StaticFiles(directory=config.ROOT / "static"), name="static")
 templates = Jinja2Templates(directory=config.ROOT / "templates")
 md = MarkdownIt("commonmark", {"html": False}).enable("table")
@@ -62,6 +61,10 @@ async def require_login(request: Request, call_next):
             and not request.session.get("auth"):
         return RedirectResponse("/login", status_code=303)
     return await call_next(request)
+
+
+# Added after require_login so it wraps it: the session must exist before the login check reads it.
+app.add_middleware(SessionMiddleware, secret_key=config.SECRET_KEY, max_age=60 * 60 * 24 * 30, https_only=False)
 
 
 @app.get("/healthz")
