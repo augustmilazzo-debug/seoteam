@@ -490,6 +490,48 @@ SITE PAGES (for internal links): {_j(site_pages[:150])}"""
     return msg.parsed_output.model_dump()
 
 
+class PhotoInfo(BaseModel):
+    title: str
+    description: str
+    alt_text: str
+    tags: list[str]
+    shows_people: bool
+    before_after: bool
+    quality_notes: str
+
+
+def analyze_photo(image_jpeg: bytes, profile: dict) -> dict:
+    """Describe and tag a client photo, and flag people and before/after content."""
+    import base64
+
+    prompt = f"""This photo was uploaded by {profile.get('business_name') or 'a business'} \
+({profile.get('business_type') or 'medical spa'}) for use on its website and blog.
+
+- title: 3-6 words.
+- description: 1-2 factual sentences on what is shown (room, equipment, product, team, treatment in \
+progress, exterior, signage, etc.).
+- alt_text: under 125 characters, describes the image for someone who can't see it; mention the \
+treatment, place or product when visible; don't start with "image of".
+- tags: 3-8 lowercase tags from what is visible: treatment names, "treatment room", "exterior", \
+"reception", "product", "team", "provider", "consultation", "skincare", the city if signage shows it.
+- shows_people: true if any person or identifiable body part (face, lips, skin close-up) is visible.
+- before_after: true if it is, or looks like, a before/after or results comparison.
+- quality_notes: one short note if the photo is blurry, dark, cluttered or off-brand; else "".
+
+Never guess anyone's identity."""
+    resp = client().beta.messages.parse(
+        model=config.CLAUDE_MODEL, max_tokens=4000, system=SYSTEM,
+        messages=[{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                         "data": base64.standard_b64encode(image_jpeg).decode()}},
+            {"type": "text", "text": prompt}]}],
+        output_format=PhotoInfo, output_config={"effort": "low"},
+        betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+    if resp.stop_reason == "refusal" or resp.parsed_output is None:
+        raise RuntimeError("Claude couldn't review this photo")
+    return resp.parsed_output.model_dump()
+
+
 def gbp_audit(profile: dict, gbp: dict, keywords: list[dict], maps_competitors: list) -> list[dict]:
     prompt = f"""Audit this Google Business Profile for Maps / local pack rankings and give 5-10 \
 recommendations (category "gbp"), highest impact first. Cover: primary and secondary categories (name \

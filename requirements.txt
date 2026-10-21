@@ -15,3 +15,4 @@ lxml
 apscheduler<4
 markdown-it-py
 pydantic>=2
+Pillow>=10.1

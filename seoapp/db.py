@@ -58,6 +58,7 @@ class Client(Base):
     jobs: Mapped[list["Job"]] = relationship(back_populates="client", cascade="all, delete-orphan")
     alerts: Mapped[list["Alert"]] = relationship(back_populates="client", cascade="all, delete-orphan")
     blog_posts: Mapped[list["BlogPost"]] = relationship(back_populates="client", cascade="all, delete-orphan")
+    media: Mapped[list["MediaItem"]] = relationship(back_populates="client", cascade="all, delete-orphan")
 
 
 class Page(Base):
@@ -214,6 +215,7 @@ class BlogPost(Base):
     faqs: Mapped[list] = mapped_column(JSON, default=list)  # [{question, answer}]
     visuals: Mapped[list] = mapped_column(JSON, default=list)
     references: Mapped[list] = mapped_column(JSON, default=list)
+    images: Mapped[dict] = mapped_column(JSON, default=dict)  # {"featured": media id, "slots": {"1": media id}}
     feedback: Mapped[str] = mapped_column(Text, default="")
     # CMS sync
     cms_id: Mapped[str] = mapped_column(String(50), default="")
@@ -225,6 +227,35 @@ class BlogPost(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
 
     client: Mapped[Client] = relationship(back_populates="blog_posts")
+
+
+class MediaItem(Base):
+    """A client photo (uploaded and approved for marketing) or an image created for a post."""
+    __tablename__ = "media"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), index=True)
+    source: Mapped[str] = mapped_column(String(20), default="upload")  # upload | claude
+    kind: Mapped[str] = mapped_column(String(20), default="photo")  # photo | featured | infographic
+    token: Mapped[str] = mapped_column(String(40), unique=True, index=True)  # unguessable public file id
+    filename: Mapped[str] = mapped_column(String(200))
+    mime: Mapped[str] = mapped_column(String(40), default="image/jpeg")
+    width: Mapped[int] = mapped_column(Integer, default=0)
+    height: Mapped[int] = mapped_column(Integer, default=0)
+    title: Mapped[str] = mapped_column(String(300), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    alt_text: Mapped[str] = mapped_column(String(300), default="")
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    analysis: Mapped[str] = mapped_column(String(20), default="")  # "" | pending | done | failed
+    has_people: Mapped[bool] = mapped_column(Boolean, default=False)
+    before_after: Mapped[bool] = mapped_column(Boolean, default=False)
+    consent: Mapped[bool] = mapped_column(Boolean, default=False)  # written consent on file for people shown
+    approved: Mapped[bool] = mapped_column(Boolean, default=False)  # approved for marketing use
+    spec: Mapped[dict] = mapped_column(JSON, default=dict)  # what a generated graphic shows (to regenerate)
+    blog_post_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # generated for this post
+    cms: Mapped[dict] = mapped_column(JSON, default=dict)  # uploads to client sites {platform: {id, url}}
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
+
+    client: Mapped[Client] = relationship(back_populates="media")
 
 
 class Alert(Base):
