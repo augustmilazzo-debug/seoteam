@@ -1,13 +1,24 @@
 {% extends "client_base.html" %}
 {% from "macros.html" import position, spark %}
 {% block client %}
+{% if not dfs_ready and not gsc_ready %}
+<div class="notice"><b>Rankings can't be checked yet: no ranking source is connected.</b>
+  Connect at least one:
+  <ul style="margin: 6px 0;">
+    <li><b>DataForSEO</b> (recommended): Google and Maps positions from the client's city, plus search volumes. Add <code>DATAFORSEO_LOGIN</code> and <code>DATAFORSEO_PASSWORD</code> in Render → your service → Environment. See <a href="/settings">Settings</a>.</li>
+    <li><b>Google Search Console</b>: real average positions for queries the site already appears for (no Maps). Add <code>GSC_SERVICE_ACCOUNT_JSON</code> in Render, then enter this client's property in <a href="/clients/{{ c.id }}/settings">client settings</a>.</li>
+  </ul></div>
+{% elif not dfs_ready %}
+<div class="notice info">Positions come from Google Search Console only (average position, no Maps rankings). Connect DataForSEO in Render for exact Google + Maps positions from the client's city.</div>
+{% endif %}
 <div class="grid two">
   <div class="panel">
     <h3 style="margin-top: 0;">How this works</h3>
     <p class="small">The system proposes keywords from the client's services and locations. <b>Tracked</b> keywords get rank checks (Google + Maps) and drive page recommendations. Set the <b>priority</b> (1-5 stars) for how much you want each one: higher priority keywords get worked on first. <b>Target page</b> is the one page that should rank for that keyword (blank = a new page is recommended).</p>
     <div class="row">
       <form class="inline" method="post" action="/clients/{{ c.id }}/run/keywords"><button>Suggest more keywords</button></form>
-      <form class="inline" method="post" action="/clients/{{ c.id }}/run/ranks"><button>Check rankings now</button></form>
+      {% if dfs_ready or gsc_ready %}<form class="inline" method="post" action="/clients/{{ c.id }}/run/ranks"><button>Check rankings now</button></form>
+      {% else %}<button disabled title="Connect DataForSEO or Search Console first">Check rankings now</button>{% endif %}
     </div>
   </div>
   <div class="panel">

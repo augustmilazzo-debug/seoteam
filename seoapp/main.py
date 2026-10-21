@@ -267,8 +267,9 @@ def client_keywords(request: Request, cid: int, show: str = "all"):
             kws = [k for k in kws if not k.tracked]
         kws = sorted(kws, key=lambda k: (not k.tracked, -k.priority, -(k.search_volume or 0), k.keyword))
         pages = [p.url for p in jobs.ranked_pages(c)]
+        gsc_ready = bool(config.GSC_SERVICE_ACCOUNT_JSON and c.gsc_property)
         return render(request, "client_keywords.html", c=c, s=client_stats(c), tab="keywords", kws=kws,
-                      pages=pages, show=show)
+                      pages=pages, show=show, dfs_ready=sources.dfs_enabled(), gsc_ready=gsc_ready)
 
 
 @app.post("/clients/{cid}/keywords/add")
