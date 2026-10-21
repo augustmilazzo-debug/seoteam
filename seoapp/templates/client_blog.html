@@ -19,6 +19,8 @@
         <input class="grow" type="text" name="target_keyword" placeholder="Target keyword (optional)">
         <input class="grow" type="text" name="supports_url" list="pages" placeholder="Service page to link to (optional)">
       </div>
+      {% if locs|length > 1 %}<select name="location" style="margin-top: 8px;"><option value="">For all locations</option>
+        {% for k, label in locs.items() %}<option value="{{ k }}">Focus on {{ label }}</option>{% endfor %}</select>{% endif %}
       <textarea name="notes" style="margin-top: 8px; min-height: 70px;" placeholder="Anything to include: angle, offers, provider quotes, facts about the clinic…"></textarea>
       <div class="row" style="margin-top: 8px;">
         <label class="check" style="margin: 0;"><input type="checkbox" name="write_now" checked> Write it now</label>
@@ -36,7 +38,7 @@
   {% for b in posts %}
   <tr>
     <td><a href="/blog/{{ b.id }}"><b>{{ b.title }}</b></a>
-      <div class="small muted">{{ 'Your idea' if b.source == 'manual' else 'Suggested' }}{% if b.search_intent %} · {{ b.search_intent }}{% endif %} · updated {{ b.updated_at|ago }}</div></td>
+      <div class="small muted">{% if b.location and locs|length > 1 %}<span class="badge b-brand">{{ locs.get(b.location, b.location) }}</span> {% endif %}{{ 'Your idea' if b.source == 'manual' else 'Suggested' }}{% if b.search_intent %} · {{ b.search_intent }}{% endif %} · updated {{ b.updated_at|ago }}</div></td>
     <td class="small">{{ b.target_keyword or '–' }}</td>
     <td>{{ b.search_volume if b.search_volume is not none else '–' }}</td>
     <td class="small">{{ '★' * b.priority }}</td>

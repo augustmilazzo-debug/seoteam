@@ -76,7 +76,7 @@ def fake_claude():
     mp.setattr(ai, "new_page_briefs", lambda profile, kws, pages: [rec("Create an Irvine Botox page", "new_page", "botox irvine")])
     mp.setattr(ai, "blog_ideas", lambda profile, kws, titles, n=6: [rec(f"Blog idea {i}", "blog") for i in range(3)])
     mp.setattr(ai, "gbp_audit", lambda profile, gbp, kws, comps: [rec("Add secondary categories", "gbp")])
-    mp.setattr(ai, "gbp_posts", lambda profile, kws, recent, n=8, month_hint="": [
+    mp.setattr(ai, "gbp_posts", lambda profile, kws, recent, n=8, month_hint="", location=None: [
         {"post_type": "update", "title": "Spring Botox refresh", "body": "Text", "cta": "BOOK", "link": BASE,
          "keyword": "botox newport beach", "image_idea": "Treatment room", "days_from_now": 2}])
     mp.setattr(ai, "blog_plan", lambda profile, kws, existing, questions, n=6: [
@@ -314,3 +314,50 @@ def test_blog_engine_and_wordpress_sync():
             assert db.get(BlogPost, bid).status == "synced"
     finally:
         wp_server.shutdown()
+
+
+def test_multiple_locations():
+    from fastapi.testclient import TestClient
+    from seoapp import locations
+    from seoapp.db import GbpPost, Keyword
+    from seoapp.main import app
+
+    with SessionLocal() as db:
+        c = Client(name="Akari", url="https://akari.example/", gbp={"primary_category": "Medical spa", "_audited": "2026-01-01"},
+                   profile={"business_name": "Akari MedSpa", "locations": [
+                       {"name": "Newport Beach", "city": "Newport Beach", "address": "1 Bristol St", "phone": "1",
+                        "dataforseo_location": "Newport Beach,California,United States", "service_areas": ["Irvine", "Costa Mesa"]},
+                       {"name": "Pasadena", "city": "Pasadena", "address": "202 S Lake Ave", "phone": "2",
+                        "dataforseo_location": "Pasadena,California,United States", "service_areas": ["Arcadia", "San Marino"]}]})
+        db.add(c)
+        db.commit()
+        cid = c.id
+        locs = locations.all_for(c)
+        assert [l["key"] for l in locs] == ["newport-beach", "pasadena"]
+        # older single-profile GBP data belongs to the primary location
+        assert locations.gbp_for(c, "newport-beach")["primary_category"] == "Medical spa"
+        assert locations.gbp_for(c, "pasadena") == {}
+        # keywords are searched from the city they name; generic ones from every location
+        kw = lambda text, loc="": Keyword(keyword=text, location=loc)
+        place, ls = locations.rank_location_for(c, kw("botox arcadia"))
+        assert place == "Arcadia,California,United States" and [l["key"] for l in ls] == ["pasadena"]
+        place, ls = locations.rank_location_for(c, kw("lip filler pasadena", "Pasadena"))
+        assert place == "Pasadena,California,United States"
+        _, ls = locations.rank_location_for(c, kw("botox near me"))
+        assert len(ls) == 2
+
+    run("gbp_posts", cid, location="pasadena")
+    with SessionLocal() as db:
+        assert {p.location for p in db.get(Client, cid).posts} == {"pasadena"}
+
+    with TestClient(app) as tc:
+        page = tc.get(f"/clients/{cid}/gbp?loc=pasadena").text
+        assert "202 S Lake Ave" in page and "Spring Botox refresh" in page
+        assert "Spring Botox refresh" not in tc.get(f"/clients/{cid}/gbp?loc=newport-beach").text
+        tc.post(f"/clients/{cid}/gbp?loc=pasadena", data={"primary_category": "Skin care clinic"})
+        with SessionLocal() as db:
+            c = db.get(Client, cid)
+            assert locations.gbp_for(c, "pasadena")["primary_category"] == "Skin care clinic"
+            assert locations.gbp_for(c, "newport-beach")["primary_category"] == "Medical spa"
+        assert tc.get(f"/clients/{cid}/blog").status_code == 200
+        assert tc.get(f"/clients/{cid}/settings").status_code == 200

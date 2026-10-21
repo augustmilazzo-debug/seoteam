@@ -83,6 +83,7 @@ class Location(BaseModel):
     state: str
     phone: str
     dataforseo_location: str  # "City,State Full Name,United States"
+    service_areas: list[str]  # nearby cities/neighborhoods this location serves
 
 
 class BusinessProfile(BaseModel):
@@ -109,8 +110,9 @@ Extract the business profile. List every distinct service/treatment the business
 variants: e.g. "Botox" and "Dysport" can be separate if they have separate pages, otherwise one \
 "Neuromodulators (Botox, Dysport)" entry) with the URL of its page ("" if none). List every physical \
 location with its full address and phone as shown on the site. For dataforseo_location use the format \
-"City,State Full Name,United States", e.g. "Newport Beach,California,United States". service_areas are \
-nearby cities/neighborhoods the business serves or mentions. Use "" or [] when not found; never guess.
+"City,State Full Name,United States", e.g. "Newport Beach,California,United States". Each location's \
+service_areas are the nearby cities/neighborhoods that location serves (from the site, or the obvious \
+neighboring cities); the top-level service_areas combine them. Use "" or [] when not found; never guess.
 
 PAGES:
 {_j(sample)}"""
@@ -195,6 +197,9 @@ have real commercial value.
 - rank_worthy = false (with empty keywords) for pages that should not compete in search: privacy, \
 terms, thank-you, login, cart, author/tag/category archives, image attachment pages, near-empty pages.
 - priority 1-5 = business value of this page ranking (5 = core money service page or homepage).
+- If the business has several locations: a page about one location (e.g. /pasadena/ or a Pasadena \
+service page) targets that location's city; general service pages target the primary (first) location's \
+city unless the page is clearly about another location; set location to the city targeted.
 
 BUSINESS: {_j({k: profile.get(k) for k in ("business_name", "business_type", "locations", "service_areas", "services")})}
 
@@ -323,6 +328,7 @@ EXISTING BLOG POSTS: {_j(blog_titles[:150])}"""
 
 
 class BlogIdea(BaseModel):
+    location: str  # the city this post focuses on, "" for posts relevant to every location
     title: str
     target_keyword: str
     secondary_keywords: list[str]
@@ -349,6 +355,11 @@ city keyword that the service page targets). Prefer topics that support the high
 keywords. Never duplicate an existing post. priority 5 = most valuable.
 
 supports_url: the existing service page this post should link to (from the target keywords' pages).
+
+If the business has several locations, spread the plan across them: some posts useful everywhere \
+(location ""), and some local posts for each city (e.g. "Best time for Botox in Pasadena before \
+wedding season"), especially for newer locations that need visibility. Local posts link to that \
+location's pages.
 
 BUSINESS: {_j(profile)}
 
@@ -487,7 +498,14 @@ class PostList(BaseModel):
 
 
 def gbp_posts(profile: dict, keywords: list[dict], recent_titles: list[str], n: int = 8,
-              month_hint: str = "") -> list[dict]:
+              month_hint: str = "", location: dict | None = None) -> list[dict]:
+    where = ""
+    if location:
+        where = f"""
+These posts are for the Google Business Profile of ONE location: {_j(location)}. Make them about \
+that location: its city and nearby neighborhoods, its team, directions/parking where useful. link: \
+that location's page when one exists (see pages), otherwise the most relevant service page.
+"""
     prompt = f"""Write {n} Google Business Profile posts for the next 4 weeks (about 2 per week; set \
 days_from_now to spread them out). Mix: service spotlights tied to a target keyword (use the service + \
 city naturally once, no stuffing), seasonal/timely angles {month_hint}, education/FAQ, team/provider \
@@ -495,7 +513,7 @@ trust, and at most one offer (only if framed as "[ask owner to confirm offer]").
 plain text (no markdown, no hashtags), friendly and expert, ends with a clear next step. link: the most \
 relevant page on the site. image_idea: what photo to attach (no before/after unless consented). Don't \
 repeat recent posts.
-
+{where}
 BUSINESS: {_j(profile)}
 
 TARGET KEYWORDS: {_j(keywords)}

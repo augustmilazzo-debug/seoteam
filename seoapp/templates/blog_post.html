@@ -5,7 +5,7 @@
 {% if err %}<div class="notice"><b>Couldn't send to WordPress:</b> {{ err }}</div>{% endif %}
 <div class="row">
   <div class="grow"><h2 style="margin: 0;">{{ b.title }}</h2>
-    <div class="small muted">Target keyword: <b>{{ b.target_keyword or '–' }}</b>{% if b.search_volume %} · {{ b.search_volume }} searches/mo{% endif %}{% if b.supports_url %} · supports <a href="{{ b.supports_url }}" target="_blank" rel="noopener">{{ b.supports_url.split('//', 1)[-1] }}</a>{% endif %}</div></div>
+    <div class="small muted">{% if loc_label %}<span class="badge b-brand">{{ loc_label }}</span> {% endif %}Target keyword: <b>{{ b.target_keyword or '–' }}</b>{% if b.search_volume %} · {{ b.search_volume }} searches/mo{% endif %}{% if b.supports_url %} · supports <a href="{{ b.supports_url }}" target="_blank" rel="noopener">{{ b.supports_url.split('//', 1)[-1] }}</a>{% endif %}</div></div>
   <span class="badge {{ stages[b.status][1] }}" style="font-size: 14px;">{{ stages[b.status][0] }}</span>
 </div>
 

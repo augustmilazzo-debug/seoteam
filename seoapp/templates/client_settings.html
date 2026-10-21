@@ -37,9 +37,10 @@
       <label>Services: one per line, optionally “Name | page URL”</label>
       <textarea name="services" style="min-height: 140px;">{% for s in p.get('services', []) %}{{ s.name }}{% if s.url %} | {{ s.url }}{% endif %}
 {% endfor %}</textarea>
-      <label>Locations: one per line, “City | full address | phone | City,State,United States”</label>
-      <textarea name="locations">{% for l in p.get('locations', []) %}{{ l.city or l.name }} | {{ l.address }} | {{ l.phone }} | {{ l.dataforseo_location }}
+      <label>Locations: one per line, primary first: “City | full address | phone | City,State,United States | nearby areas, comma separated”</label>
+      <textarea name="locations" style="min-height: 110px;">{% for l in p.get('locations', []) %}{{ l.city or l.name }} | {{ l.address }} | {{ l.phone }} | {{ l.dataforseo_location }} | {{ (l.service_areas or [])|join(', ') }}
 {% endfor %}</textarea>
+      <p class="small muted">Each location gets its own Google Business Profile tab, Maps rank checks and local blog ideas.</p>
       <label>Service areas (one per line)</label><textarea name="service_areas">{{ p.get('service_areas', [])|join('\n') }}</textarea>
       <label>What makes them different (one per line)</label><textarea name="usps">{{ p.get('unique_selling_points', [])|join('\n') }}</textarea>
       <label>Providers and credentials (one per line)</label><textarea name="providers">{{ p.get('providers', [])|join('\n') }}</textarea>

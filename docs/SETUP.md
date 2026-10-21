@@ -97,3 +97,24 @@ most of it creating accounts.
 - **Cost control**: each weekly audit runs up to 6 AI page reviews per client and skips
   pages that haven't changed since their last review.
 - **Backups**: Render → your service → Disks → enable snapshots.
+
+## Blog engine and WordPress
+
+- **Blog tab:** ideas are suggested weekly from the target keywords (spread across locations
+  when there are several). Click **Write it**, or add your own topic. Claude writes the full post:
+  quick answer, takeaways, question headings, tables/charts, photo spots, FAQs and schema.
+- **Connect WordPress** (client → Settings → WordPress connection): in the client's WordPress go to
+  **Users → Profile → Application Passwords**, create one named "SEO Command Center", and paste it
+  with the username. Click **Save and test connection**.
+- After you **Approve** a post, **Send to WordPress as a draft**. It appears in WordPress → Posts →
+  Drafts for final review, a featured image, and Publish. Sending again updates the same draft.
+  If Yoast or Rank Math doesn't pick up the SEO title/description automatically, copy them from the
+  post screen.
+- Other platforms (Wix, Squarespace, Webflow): use **Copy HTML** or **Download HTML**.
+
+## Multiple locations
+
+List every location in client → Settings → Business profile (primary first, with nearby areas).
+Each location then gets its own Google Business Profile section (details, audit, posts, Maps
+rankings), keywords naming a city are checked from that city, "near me" keywords are checked from
+every location, and blog ideas include local posts for each city.

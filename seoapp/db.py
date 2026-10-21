@@ -118,6 +118,8 @@ class Keyword(Base):
     ranking_url: Mapped[str] = mapped_column(String(1000), default="")
     gsc_clicks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gsc_impressions: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Positions per client location for keywords without a city ("botox near me"): {loc_key: {position, maps}}
+    loc_ranks: Mapped[dict] = mapped_column(JSON, default=dict)
     competitors: Mapped[list] = mapped_column(JSON, default=list)  # top results from last SERP check
     analysis: Mapped[dict] = mapped_column(JSON, default=dict)  # top-3 competitor page comparison
     history: Mapped[list] = mapped_column(JSON, default=list)  # [{date, position, local, source}]
@@ -146,6 +148,7 @@ class Recommendation(Base):
     # open | approved | done | dismissed | resolved (fixed, confirmed by re-audit)
     status: Mapped[str] = mapped_column(String(20), default="open")
     needs_approval: Mapped[bool] = mapped_column(Boolean, default=False)
+    location: Mapped[str] = mapped_column(String(100), default="")  # location key for GBP/local items
     draft: Mapped[str] = mapped_column(Text, default="")  # generated content (markdown)
     draft_status: Mapped[str] = mapped_column(String(20), default="")  # "" | draft | approved | rejected
     baseline: Mapped[dict] = mapped_column(JSON, default=dict)  # position etc. when marked done
@@ -171,6 +174,7 @@ class GbpPost(Base):
     image_idea: Mapped[str] = mapped_column(Text, default="")
     suggested_date: Mapped[dt.date | None] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="draft")  # draft | approved | published | rejected
+    location: Mapped[str] = mapped_column(String(100), default="")  # location key (see locations.py)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
 
     client: Mapped[Client] = relationship(back_populates="posts")
@@ -193,6 +197,7 @@ class BlogPost(Base):
     supports_url: Mapped[str] = mapped_column(String(1000), default="")  # money page it should link to
     priority: Mapped[int] = mapped_column(Integer, default=3)
     search_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    location: Mapped[str] = mapped_column(String(100), default="")  # location key it focuses on, "" = all
     # Written article
     meta_title: Mapped[str] = mapped_column(String(300), default="")
     meta_description: Mapped[str] = mapped_column(String(500), default="")

@@ -14,7 +14,7 @@ from markdown_it import MarkdownIt
 from sqlalchemy import select
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import audit, blog, config, crawler, jobs, sources
+from . import audit, blog, config, crawler, jobs, locations, sources
 from .db import BlogPost, Client, GbpPost, Job, Keyword, Page, Recommendation, SessionLocal, init_db, now
 
 
@@ -457,16 +457,18 @@ def client_blog(request: Request, cid: int):
                            key=lambda b: (-b.priority, -(b.search_volume or 0), -b.id))
             groups.append((st, label, cls, posts))
         pages = [p.url for p in jobs.ranked_pages(c)]
-        return render(request, "client_blog.html", c=c, s=client_stats(c), tab="blog", groups=groups, pages=pages)
+        locs = {l["key"]: l["label"] for l in locations.all_for(c)}
+        return render(request, "client_blog.html", c=c, s=client_stats(c), tab="blog", groups=groups, pages=pages,
+                      locs=locs)
 
 
 @app.post("/clients/{cid}/blog/new")
 def blog_new(cid: int, title: str = Form(...), target_keyword: str = Form(""), notes: str = Form(""),
-             supports_url: str = Form(""), write_now: str = Form("")):
+             supports_url: str = Form(""), write_now: str = Form(""), location: str = Form("")):
     with SessionLocal() as db:
         c = get_client(db, cid)
         b = BlogPost(client_id=c.id, source="manual", title=title.strip(), target_keyword=target_keyword.strip().lower(),
-                     angle=notes.strip(), supports_url=supports_url.strip(), priority=4)
+                     angle=notes.strip(), supports_url=supports_url.strip(), priority=4, location=location)
         db.add(b)
         db.commit()
         bid = b.id
@@ -485,7 +487,9 @@ def blog_detail(request: Request, bid: int):
         checks = blog.checklist(b, sources.domain_of(c.url)) if b.body else []
         preview = blog.full_html(b, c.profile or {}, include_schema=False) if b.body else ""
         faq_text = "\n\n".join(f"Q: {f['question']}\nA: {f['answer']}" for f in b.faqs or [])
+        loc_label = locations.get(c, b.location)["label"] if b.location else ""
         return render(request, "blog_post.html", c=c, s=client_stats(c), tab="blog", b=b, job=job, checks=checks,
+                      loc_label=loc_label,
                       preview=preview, faq_text=faq_text, stages={st: (label, cls) for st, label, cls in BLOG_STAGES},
                       msg=request.query_params.get("msg", ""), err=request.query_params.get("err", ""))
 
@@ -615,32 +619,53 @@ GBP_FIELDS = [
 
 
 @app.get("/clients/{cid}/gbp", response_class=HTMLResponse)
-def client_gbp(request: Request, cid: int):
+def client_gbp(request: Request, cid: int, loc: str = ""):
     with SessionLocal() as db:
         c = get_client(db, cid)
-        posts = sorted(c.posts, key=lambda p: ({"draft": 0, "approved": 1, "published": 2, "rejected": 3}[p.status],
-                                               p.suggested_date or dt.date.max))
-        gbp_recs = [r for r in open_recs(c) if r.category in ("gbp", "local")]
-        tracked = sorted([k for k in c.keywords if k.tracked], key=lambda k: -k.priority)
-        return render(request, "client_gbp.html", c=c, s=client_stats(c), tab="gbp", posts=posts,
-                      fields=GBP_FIELDS, gbp=c.gbp or {}, recs=gbp_recs, tracked=tracked)
+        locs = locations.all_for(c)
+        cur = locations.get(c, loc)
+        primary = locs[0]["key"]
+        mine = lambda key: (key or primary) == cur["key"]
+        posts = sorted([p for p in c.posts if mine(p.location)],
+                       key=lambda p: ({"draft": 0, "approved": 1, "published": 2, "rejected": 3}[p.status],
+                                      p.suggested_date or dt.date.max))
+        recs = [r for r in open_recs(c) if r.category in ("gbp", "local") and mine(r.location)]
+        kws = []
+        for k in sorted([k for k in c.keywords if k.tracked], key=lambda k: -k.priority):
+            if any(l["key"] == cur["key"] for l in locations.for_keyword(c, k)):
+                r = (k.loc_ranks or {}).get(cur["key"], {})
+                kws.append({"keyword": k.keyword, "priority": k.priority, "checked": bool(k.last_checked),
+                            "maps": r.get("maps") if r else k.local_pack_position,
+                            "position": r.get("position") if r else k.position})
+        counts = {l["key"]: sum(1 for p in c.posts if p.status == "draft" and (p.location or primary) == l["key"])
+                  for l in locs}
+        return render(request, "client_gbp.html", c=c, s=client_stats(c), tab="gbp", posts=posts, fields=GBP_FIELDS,
+                      gbp=locations.gbp_for(c, cur["key"]), recs=recs, kws=kws, locs=locs, cur=cur, counts=counts)
 
 
 @app.post("/clients/{cid}/gbp")
-async def client_gbp_save(request: Request, cid: int):
+async def client_gbp_save(request: Request, cid: int, loc: str = ""):
     form = await request.form()
     with SessionLocal() as db:
         c = get_client(db, cid)
-        data = {k: v for k, v in (c.gbp or {}).items() if k.startswith("_")}
-        for key, _, _ in GBP_FIELDS:
-            v = str(form.get(key, "")).strip()
+        key = locations.get(c, loc)["key"]
+        data = {k: v for k, v in locations.gbp_for(c, key).items() if k.startswith("_") and k != "_audited"}
+        for field, _, _ in GBP_FIELDS:
+            v = str(form.get(field, "")).strip()
             if v:
-                data[key] = v
-        data.pop("_audited", None)  # profile changed: audit it again
-        c.gbp = data
+                data[field] = v
+        locations.set_gbp(c, key, data)  # changed: audit it again
         db.commit()
-    jobs.enqueue(cid, "gbp_audit")
-    return RedirectResponse(f"/clients/{cid}/gbp", status_code=303)
+    jobs.enqueue(cid, "gbp_audit", location=key)
+    return RedirectResponse(f"/clients/{cid}/gbp?loc={key}", status_code=303)
+
+
+@app.post("/clients/{cid}/gbp/posts")
+def client_gbp_posts(cid: int, loc: str = ""):
+    with SessionLocal() as db:
+        key = locations.get(get_client(db, cid), loc)["key"]
+    jobs.enqueue(cid, "gbp_posts", location=key)
+    return RedirectResponse(f"/clients/{cid}/gbp?loc={key}", status_code=303)
 
 
 @app.post("/posts/{pid}")
@@ -694,7 +719,7 @@ def client_settings_save(cid: int, name: str = Form(...), url: str = Form(...), 
 @app.post("/clients/{cid}/profile")
 def client_profile_save(cid: int, business_name: str = Form(""), business_type: str = Form(""),
                         is_medical: str = Form(""), summary: str = Form(""), services: str = Form(""),
-                        locations: str = Form(""), service_areas: str = Form(""), usps: str = Form(""),
+                        locations_text: str = Form("", alias="locations"), service_areas: str = Form(""), usps: str = Form(""),
                         providers: str = Form(""), brand_voice: str = Form(""), booking_url: str = Form("")):
     with SessionLocal() as db:
         c = get_client(db, cid)
@@ -705,10 +730,10 @@ def client_profile_save(cid: int, business_name: str = Form(""), business_type: 
             svc.append({"name": name, "url": url or old.get(name, {}).get("url", ""),
                         "description": old.get(name, {}).get("description", "")})
         locs = []
-        for line in _lines(locations):
-            parts = [x.strip() for x in line.split("|")] + ["", "", "", ""]
+        for line in _lines(locations_text):
+            parts = [x.strip() for x in line.split("|")] + ["", "", "", "", ""]
             locs.append({"name": parts[0], "address": parts[1], "phone": parts[2], "dataforseo_location": parts[3],
-                         "city": parts[0], "state": ""})
+                         "city": parts[0], "state": "", "service_areas": [a.strip() for a in parts[4].split(",") if a.strip()]})
         c.profile = {**(c.profile or {}), "business_name": business_name, "business_type": business_type,
                      "is_medical": is_medical == "on", "summary": summary, "services": svc, "locations": locs,
                      "service_areas": _lines(service_areas), "unique_selling_points": _lines(usps),

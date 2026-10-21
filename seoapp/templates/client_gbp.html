@@ -1,12 +1,19 @@
 {% extends "client_base.html" %}
 {% from "macros.html" import rec_row %}
 {% block client %}
+{% if locs|length > 1 %}
+<div class="row" style="margin-bottom: 16px;">
+  <span class="small muted">Location:</span>
+  {% for l in locs %}<a class="btn sm {{ 'btn-primary' if l.key == cur.key }}" href="?loc={{ l.key }}">{{ l.label }}{% if counts[l.key] %} <span class="badge b-high">{{ counts[l.key] }}</span>{% endif %}</a>{% endfor %}
+  <span class="small muted">Each location has its own profile, posts, audit and Maps rankings.</span>
+</div>
+{% endif %}
 <div class="grid two">
   <div>
-    <h2 style="margin-top: 0;">Posts for Google Business Profile</h2>
+    <h2 style="margin-top: 0;">Posts for {{ cur.label if locs|length > 1 else 'Google Business Profile' }}</h2>
     <p class="small muted">New posts are drafted automatically when fewer than 3 are waiting. Approve them, then post them on Google (copy, paste, add the photo) and click <b>Published</b>. Once Google approves API access, approved posts can be published automatically.</p>
     <div class="row noprint" style="margin-bottom: 12px;">
-      <form class="inline" method="post" action="/clients/{{ c.id }}/run/gbp_posts"><button class="primary">Draft new posts</button></form>
+      <form class="inline" method="post" action="/clients/{{ c.id }}/gbp/posts?loc={{ cur.key }}"><button class="primary">Draft new posts</button></form>
     </div>
     {% for p in posts %}
     <div class="post">
@@ -45,10 +52,11 @@
   </div>
 
   <div>
-    <h2 style="margin-top: 0;">Profile details</h2>
+    <h2 style="margin-top: 0;">Profile details{% if locs|length > 1 %}: {{ cur.label }}{% endif %}</h2>
     <div class="panel">
       <p class="small muted" style="margin-top: 0;">Copy these from the client's Google Business Profile. When you save, Claude audits the profile against the top Maps competitors and adds recommendations below.</p>
-      <form method="post" action="/clients/{{ c.id }}/gbp">
+      {% if cur.address %}<p class="small">Address on the website: <b>{{ cur.address }}</b>{% if cur.phone %} · {{ cur.phone }}{% endif %}. The profile must match it exactly.</p>{% endif %}
+      <form method="post" action="/clients/{{ c.id }}/gbp?loc={{ cur.key }}">
         {% for key, label, kind in fields %}
         <label>{{ label }}</label>
         {% if kind == 'textarea' %}<textarea name="{{ key }}">{{ gbp.get(key, '') }}</textarea>
@@ -62,16 +70,17 @@
       {% endif %}
     </div>
 
-    <h2>Maps rankings</h2>
+    <h2>Maps rankings{% if locs|length > 1 %} near {{ cur.label }}{% endif %}</h2>
     <div class="table-wrap"><table>
-      <tr><th>Keyword</th><th>Maps position</th></tr>
-      {% for k in tracked %}<tr><td>{{ k.keyword }}</td><td>{{ k.local_pack_position or ('–' if not k.last_checked else '>20') }}</td></tr>
-      {% else %}<tr><td colspan="2" class="muted">Track keywords to see Maps positions.</td></tr>{% endfor %}
+      <tr><th>Keyword</th><th>Maps</th><th>Google</th></tr>
+      {% for k in kws %}<tr><td>{{ k.keyword }}</td><td>{{ k.maps or ('–' if not k.checked else '>20') }}</td>
+        <td>{{ (k.position|int) if k.position else ('–' if not k.checked else '>' ~ RANK_DEPTH) }}</td></tr>
+      {% else %}<tr><td colspan="3" class="muted">Track keywords to see Maps positions.</td></tr>{% endfor %}
     </table></div>
   </div>
 </div>
 
-<h2>Profile and local recommendations</h2>
+<h2>Profile and local recommendations{% if locs|length > 1 %}: {{ cur.label }}{% endif %}</h2>
 <div class="panel">
   {% for r in recs %}{{ rec_row(r) }}{% else %}<div class="empty">Save the profile details above to get a GBP audit.</div>{% endfor %}
 </div>

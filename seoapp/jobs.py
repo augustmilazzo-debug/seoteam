@@ -11,7 +11,7 @@ import traceback
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import select
 
-from . import ai, audit, config, crawler, scoring, sources
+from . import ai, audit, config, crawler, locations, scoring, sources
 from .db import Alert, BlogPost, Client, GbpPost, Job, Keyword, Page, Recommendation, SessionLocal, now
 
 REVIEW_CYCLE_DAYS = 28  # every ranking page gets a full AI review at least this often
@@ -116,7 +116,7 @@ def upsert_rec(db, c: Client, data: dict, kw_priority: int = 0) -> Recommendatio
         return r
     elif r.status == "resolved":
         r.status = "open"
-    for k in ("category", "title", "details", "page_url", "keyword", "impact", "effort", "confidence"):
+    for k in ("category", "title", "details", "page_url", "keyword", "impact", "effort", "confidence", "location"):
         if k in data:
             setattr(r, k, data[k])
     r.needs_approval = data.get("needs_approval", r.needs_approval or False)
@@ -143,7 +143,7 @@ def google_page(pos) -> int | None:
 
 
 def is_local(k: Keyword) -> bool:
-    return bool(k.location) or bool(LOCAL_HINT.search(k.keyword))
+    return bool(k.location) or bool(LOCAL_HINT.search(k.keyword)) or k.intent in ("transactional", "local")
 
 
 def page_keywords(c: Client) -> dict[str, list[Keyword]]:
@@ -604,7 +604,9 @@ def step_blog(db, c: Client, log, force=False):
         if kw in have:
             continue
         have.add(kw)
-        b = BlogPost(client_id=c.id, source="ai", title=i["title"], target_keyword=kw,
+        loc_key = next((l["key"] for l in locations.all_for(c) if i.get("location") and
+                        i["location"].lower() in (l.get("city") or l["label"]).lower()), "")
+        b = BlogPost(client_id=c.id, source="ai", title=i["title"], target_keyword=kw, location=loc_key,
                      secondary_keywords=i["secondary_keywords"], search_intent=i["search_intent"], angle=i["angle"],
                      outline=i["outline"], supports_url=i["supports_url"] if i["supports_url"] in valid else "",
                      priority=max(1, min(5, i["priority"])))
@@ -631,7 +633,8 @@ def job_blog_write(db, c: Client, log, post_id: int):
     competitors = []
     if sources.dfs_enabled() and b.target_keyword:
         try:
-            org = sources.organic_rank(b.target_keyword, sources.domain_of(c.url), c.rank_location)
+            place = locations.get(c, b.location)["rank_location"] if b.location else c.rank_location
+            org = sources.organic_rank(b.target_keyword, sources.domain_of(c.url), place)
             tmp = Keyword(keyword=b.target_keyword, competitors=org["top"])
             competitors = _competitor_summaries(tmp, sources.domain_of(c.url), log)
             log(f"Studied {len(competitors)} page(s) ranking for '{b.target_keyword}'")
@@ -640,6 +643,8 @@ def job_blog_write(db, c: Client, log, post_id: int):
     post = {"title": b.title, "target_keyword": b.target_keyword, "secondary_keywords": b.secondary_keywords,
             "search_intent": b.search_intent, "angle_or_owner_notes": b.angle, "outline": b.outline,
             "supporting_service_page": b.supports_url, "revision_feedback": b.feedback,
+            "location_focus": ({k: v for k, v in locations.get(c, b.location).items() if k in ("label", "address", "service_areas")}
+                               if b.location else "all locations"),
             "previous_draft": b.body[:6000] if b.feedback and b.body else ""}
     log(f"Writing '{b.title}' (usually 2-4 minutes)")
     try:
@@ -657,19 +662,39 @@ def job_blog_write(db, c: Client, log, post_id: int):
     log("Draft ready for your review on the Blog tab")
 
 
-def step_gbp_audit(db, c: Client, log, force=False):
-    if not ai.enabled() or not c.gbp:
+def _location_keywords(c: Client, loc: dict) -> list[dict]:
+    out = []
+    for k in c.keywords:
+        if k.tracked and any(l["key"] == loc["key"] for l in locations.for_keyword(c, k)):
+            v = kw_view(k)
+            if loc["key"] in (k.loc_ranks or {}):
+                v["position"] = k.loc_ranks[loc["key"]]["position"]
+                v["maps_position"] = k.loc_ranks[loc["key"]]["maps"]
+            out.append(v)
+    return sorted(out, key=lambda v: -v["priority"])
+
+
+def step_gbp_audit(db, c: Client, log, force=False, location: str = ""):
+    if not ai.enabled():
         return
-    last = (c.gbp or {}).get("_audited")
-    if last and not force and (dt.date.today() - dt.date.fromisoformat(last)).days < 28:
-        return
-    log("Auditing Google Business Profile")
-    recs = ai.gbp_audit(c.profile or {}, {k: v for k, v in c.gbp.items() if not k.startswith("_")},
-                        [kw_view(k) for k in c.keywords if k.tracked], (c.gbp or {}).get("_maps_competitors", []))
-    for r in recs:
-        upsert_rec(db, c, {**r, "category": "gbp", "fingerprint": f"ai:gbp:{slug(r['title'])}"}, 4)
-    c.gbp = {**c.gbp, "_audited": dt.date.today().isoformat()}
-    db.commit()
+    for loc in locations.all_for(c):
+        if location and loc["key"] != location:
+            continue
+        g = locations.gbp_for(c, loc["key"])
+        if not any(v for k, v in g.items() if not k.startswith("_")):
+            continue
+        last = g.get("_audited")
+        if last and not force and (dt.date.today() - dt.date.fromisoformat(last)).days < 28:
+            continue
+        log(f"Auditing the Google Business Profile for {loc['label']}")
+        recs = ai.gbp_audit(c.profile or {}, {"location": {k: loc.get(k) for k in ("label", "address", "phone", "service_areas")},
+                                              **{k: v for k, v in g.items() if not k.startswith("_")}},
+                            _location_keywords(c, loc), g.get("_maps_competitors", []))
+        for r in recs:
+            upsert_rec(db, c, {**r, "category": "gbp", "fingerprint": f"ai:gbp:{loc['key']}:{slug(r['title'])}",
+                               "location": loc["key"]}, 4)
+        locations.set_gbp(c, loc["key"], {**g, "_audited": dt.date.today().isoformat()})
+        db.commit()
 
 
 def step_measure(db, c: Client, log):
@@ -693,6 +718,12 @@ def step_measure(db, c: Client, log):
         log(f"Measured impact for {n} completed recommendation(s)")
 
 
+def _check(c, k, place, domain, name, local):
+    org = sources.organic_rank(k.keyword, domain, place)
+    maps = sources.maps_rank(k.keyword, domain, name, place) if local else None
+    return org, maps
+
+
 def step_ranks(db, c: Client, log):
     tracked = [k for k in c.keywords if k.tracked]
     if not tracked:
@@ -706,34 +737,59 @@ def step_ranks(db, c: Client, log):
         return
     domain = sources.domain_of(c.url)
     name = (c.profile or {}).get("business_name") or c.name
-    maps_seen: dict[str, int] = {}
-    log(f"Checking {len(tracked)} keyword(s) on Google (top {sources.RANK_DEPTH}) and Maps (local keywords)")
+    locs = locations.all_for(c)
+    maps_seen: dict[str, dict[str, int]] = {l["key"]: {} for l in locs}
+    log(f"Checking {len(tracked)} keyword(s) on Google (top {sources.RANK_DEPTH}) and Maps (local keywords)"
+        + (f" across {len(locs)} locations" if len(locs) > 1 else ""))
     alerts = 0
     for k in tracked:
+        place, check_locs = locations.rank_location_for(c, k)
+        local = is_local(k) or bool(locations.city_in_keyword(c, k))
+        per_loc, primary = {}, None
         try:
-            org = sources.organic_rank(k.keyword, domain, c.rank_location)
-            local = sources.maps_rank(k.keyword, domain, name, c.rank_location) if is_local(k) else None
+            if len(check_locs) == 1 or not local:
+                org, maps = _check(c, k, place, domain, name, local)
+                primary = (org, maps)
+                for l in (check_locs[:1] if local else []):
+                    per_loc[l["key"]] = {"position": org["position"], "maps": maps}
+            else:  # generic local keyword ("botox near me"): search from each location
+                for l in check_locs:
+                    org, maps = _check(c, k, l["rank_location"], domain, name, True)
+                    per_loc[l["key"]] = {"position": org["position"], "maps": maps}
+                    primary = primary or (org, maps)
+                    for title, _ in org.get("local_pack", []):
+                        if name.lower() not in title.lower():
+                            maps_seen[l["key"]][title] = maps_seen[l["key"]].get(title, 0) + 1
         except Exception as e:
             log(f"Rank check failed for '{k.keyword}': {e}")
             continue
-        alert = _record_position(k, org["position"], local, org["url"], "dataforseo")
+        org, maps = primary
+        alert = _record_position(k, org["position"], maps, org["url"], "dataforseo")
         if alert:
             db.add(alert)
             alerts += 1
+        k.loc_ranks = per_loc
         k.competitors = org["top"]
+        if len(check_locs) == 1 or not local:
+            for title, _ in org.get("local_pack", []):
+                if name.lower() not in title.lower():
+                    key = check_locs[0]["key"]
+                    maps_seen[key][title] = maps_seen[key].get(title, 0) + 1
         if k.role == "primary":
             k.analysis = {"checked": dt.date.today().isoformat(),
                           "competitors": _competitor_summaries(k, domain, log)}
-        for title, _ in org.get("local_pack", []):
-            if name.lower() not in title.lower():
-                maps_seen[title] = maps_seen.get(title, 0) + 1
-        log(f"'{k.keyword}': Google {org['position'] or '>' + str(sources.RANK_DEPTH)}"
-            + (f", Maps {local or '>20'}" if is_local(k) else ""))
+        where = ", ".join(f"{locations.get(c, key)['label']}: Google {v['position'] or '>' + str(sources.RANK_DEPTH)}"
+                          + (f", Maps {v['maps'] or '>20'}" if local else "") for key, v in per_loc.items())
+        log(f"'{k.keyword}': " + (where or f"Google {org['position'] or '>' + str(sources.RANK_DEPTH)}"))
         db.commit()
         time.sleep(0.2)
+    for l in locs:
+        seen = maps_seen[l["key"]]
+        if seen:
+            g = locations.gbp_for(c, l["key"])
+            locations.set_gbp(c, l["key"], {**g, "_maps_competitors": sorted(seen, key=lambda t: -seen[t])[:8]})
     if alerts:
         log(f"{alerts} notable ranking change(s) recorded")
-    c.gbp = {**(c.gbp or {}), "_maps_competitors": sorted(maps_seen, key=lambda t: -maps_seen[t])[:8]}
     c.last_rank_at = now()
     db.commit()
 
@@ -805,22 +861,28 @@ def job_blog(db, c, log):
     step_blog(db, c, log, force=True)
 
 
-def job_gbp_audit(db, c, log):
-    step_gbp_audit(db, c, log, force=True)
+def job_gbp_audit(db, c, log, location: str = ""):
+    step_gbp_audit(db, c, log, force=True, location=location)
 
 
-def job_gbp_posts(db, c, log, n=8):
+def job_gbp_posts(db, c, log, n=8, location: str = ""):
     if not ai.enabled():
         raise RuntimeError("Add ANTHROPIC_API_KEY to generate posts")
-    recent = [p.title for p in sorted(c.posts, key=lambda p: p.created_at, reverse=True)]
+    loc = locations.get(c, location) if location else locations.all_for(c)[0]
+    recent = [p.title for p in sorted(c.posts, key=lambda p: p.created_at, reverse=True)
+              if (p.location or locations.all_for(c)[0]["key"]) == loc["key"]]
     month = dt.date.today().strftime("for %B")
-    posts = ai.gbp_posts(c.profile or {}, [kw_view(k) for k in c.keywords if k.tracked], recent, n, month)
+    loc_pages = [p.url for p in c.pages if loc["key"] in p.url.lower()]
+    posts = ai.gbp_posts(c.profile or {}, _location_keywords(c, loc), recent, n, month,
+                         location={k: loc.get(k) for k in ("label", "address", "service_areas")} | {"pages": loc_pages[:10]}
+                         if len(locations.all_for(c)) > 1 else None)
     for p in posts:
         db.add(GbpPost(client_id=c.id, post_type=p["post_type"], title=p["title"], body=p["body"],
                        cta=p["cta"], link=p["link"], keyword=p["keyword"], image_idea=p["image_idea"],
+                       location=loc["key"],
                        suggested_date=dt.date.today() + dt.timedelta(days=max(0, p["days_from_now"]))))
     db.commit()
-    log(f"Drafted {len(posts)} posts for approval")
+    log(f"Drafted {len(posts)} posts for {loc['label']} for approval")
 
 
 def job_draft(db, c, log, rec_id: int, feedback: str = ""):
@@ -856,10 +918,15 @@ def tick():
                 enqueue(c.id, "audit")
             elif any(k.tracked for k in c.keywords) and ranks_due(c):
                 enqueue(c.id, "ranks")
-            if c.gbp and ai.enabled():
-                upcoming = [p for p in c.posts if p.status in ("draft", "approved")]
-                if len(upcoming) < 3:
-                    enqueue(c.id, "gbp_posts")
+            if ai.enabled():
+                primary = locations.all_for(c)[0]["key"]
+                for loc in locations.all_for(c):
+                    if not locations.gbp_for(c, loc["key"]):
+                        continue
+                    upcoming = [p for p in c.posts if p.status in ("draft", "approved")
+                                and (p.location or primary) == loc["key"]]
+                    if len(upcoming) < 3:
+                        enqueue(c.id, "gbp_posts", location=loc["key"])
 
 
 _started = False
