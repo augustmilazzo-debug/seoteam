@@ -12,6 +12,7 @@ import requests
 from . import config
 
 US = 2840
+RANK_DEPTH = 30  # results checked per keyword: Google pages 1-3
 
 
 # -- PageSpeed Insights -------------------------------------------------------
@@ -86,7 +87,7 @@ def _loc(location_name: str) -> dict:
 
 def organic_rank(keyword: str, domain: str, location_name: str) -> dict:
     """Position of `domain` in Google mobile results, plus the top competitors."""
-    task = {"keyword": keyword, "language_code": "en", "device": "mobile", "depth": 100, **_loc(location_name)}
+    task = {"keyword": keyword, "language_code": "en", "device": "mobile", "depth": RANK_DEPTH, **_loc(location_name)}
     try:
         res = _dfs("serp/google/organic/live/advanced", [task])
     except RuntimeError:

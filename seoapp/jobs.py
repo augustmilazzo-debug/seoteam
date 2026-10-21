@@ -1,6 +1,7 @@
 """Background work: the audit pipeline, rank checks, content generation, and
 the scheduler that keeps every client re-audited automatically."""
 
+import concurrent.futures as cf
 import datetime as dt
 import re
 import threading
@@ -11,9 +12,11 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import select
 
 from . import ai, audit, config, crawler, scoring, sources
-from .db import Client, GbpPost, Job, Keyword, Page, Recommendation, SessionLocal, now
+from .db import Alert, Client, GbpPost, Job, Keyword, Page, Recommendation, SessionLocal, now
 
-MAX_PAGE_OPTIMIZATIONS = 6  # Claude page reviews per audit, to control cost
+REVIEW_CYCLE_DAYS = 28  # every ranking page gets a full AI review at least this often
+MIN_REVIEWS, MAX_REVIEWS = 6, 25  # AI page reviews per audit, to spread cost evenly
+LOCAL_HINT = re.compile(r"\bnear me\b|\bnearby\b", re.I)
 _wake = threading.Event()
 
 
@@ -34,6 +37,7 @@ def enqueue(client_id: int, kind: str, **params) -> int:
 class JobLog:
     def __init__(self, db, job: Job):
         self.db, self.job = db, job
+        self.warnings = 0
 
     def __call__(self, msg: str):
         line = f"[{now():%H:%M:%S}] {msg}"
@@ -60,7 +64,7 @@ def worker_loop():
             log = JobLog(db, job)
             try:
                 HANDLERS[job.kind](db, db.get(Client, job.client_id), log, **(job.params or {}))
-                job.status = "done"
+                job.status = "warning" if log.warnings else "done"
             except Exception as e:  # keep the worker alive; show the error in the UI
                 db.rollback()
                 job = db.get(Job, job.id)
@@ -118,6 +122,38 @@ def upsert_rec(db, c: Client, data: dict, kw_priority: int = 0) -> Recommendatio
     r.score, r.level = score, level
     r.updated_at = r.last_seen_at = now()
     return r
+
+
+def safe(step, db, c, log, *args, **kwargs):
+    """Run one audit step; on error, log it and let the rest of the audit continue."""
+    try:
+        return step(db, c, log, *args, **kwargs)
+    except Exception as e:
+        db.rollback()
+        log(f"WARNING: step '{step.__name__.removeprefix('step_')}' failed: {type(e).__name__}: {e}")
+        log(traceback.format_exc()[-1500:])
+        if hasattr(log, "warnings"):
+            log.warnings += 1
+        return None
+
+
+def google_page(pos) -> int | None:
+    return None if pos is None else int((pos - 1) // 10) + 1
+
+
+def is_local(k: Keyword) -> bool:
+    return bool(k.location) or bool(LOCAL_HINT.search(k.keyword))
+
+
+def page_keywords(c: Client) -> dict[str, list[Keyword]]:
+    """Tracked keywords grouped by the page meant to rank for them, primary first."""
+    out: dict[str, list[Keyword]] = {}
+    for k in c.keywords:
+        if k.tracked and k.target_url:
+            out.setdefault(k.target_url, []).append(k)
+    for kws in out.values():
+        kws.sort(key=lambda k: (k.role != "primary", -k.priority, -(k.search_volume or 0)))
+    return out
 
 
 def slug(s: str) -> str:
@@ -223,13 +259,17 @@ def step_gsc(db, c: Client, log):
         if q:
             k.gsc_clicks, k.gsc_impressions = q["clicks"], q["impressions"]
             if not sources.dfs_enabled():
-                _record_position(k, round(q["pos_w"] / max(1, q["impressions"]), 1), None, q["page"], "gsc")
+                alert = _record_position(k, round(q["pos_w"] / max(1, q["impressions"]), 1), None, q["page"], "gsc")
+                if alert:
+                    db.add(alert)
     db.commit()
     log(f"Search Console: {len(rows)} query/page rows")
     return rows
 
 
 def _record_position(k: Keyword, pos, local, url, source):
+    """Store a new position. Returns an Alert for notable moves (not on the first check)."""
+    old, first_check = k.position, k.last_checked is None
     if k.position is not None:
         k.previous_position = k.position
     k.position = pos
@@ -240,6 +280,29 @@ def _record_position(k: Keyword, pos, local, url, source):
     k.history = (k.history or []) + [{"date": dt.date.today().isoformat(), "position": pos, "local": local, "source": source}]
     k.history = k.history[-120:]
     k.last_checked = now()
+    if first_check:
+        return None
+    msg, kind = "", ""
+    if old is None and pos is not None:
+        kind, msg = "new", f"Now ranking #{_fmt(pos)} (page {google_page(pos)})"
+    elif old is not None and pos is None:
+        kind, msg = "lost", f"Dropped out of the top {sources.RANK_DEPTH} (was #{_fmt(old)})"
+    elif old is not None and pos is not None:
+        delta = old - pos
+        page_change = google_page(old) != google_page(pos)
+        if abs(delta) >= 3 or page_change:
+            kind = "up" if delta > 0 else "down"
+            msg = f"{'Up' if delta > 0 else 'Down'} {_fmt(abs(delta))} to #{_fmt(pos)}"
+            if page_change:
+                msg += f" (now on page {google_page(pos)})"
+    if not kind:
+        return None
+    return Alert(client_id=k.client_id, kind=kind, keyword=k.keyword, page_url=k.target_url or k.ranking_url,
+                 old_position=old, new_position=pos, message=msg)
+
+
+def _fmt(x) -> str:
+    return str(int(x)) if float(x).is_integer() else str(round(x, 1))
 
 
 def step_keywords(db, c: Client, log, force=False):
@@ -271,6 +334,57 @@ def step_keywords(db, c: Client, log, force=False):
         added.append(k)
     db.commit()
     log(f"Added {len(added)} keyword ideas ({sum(k.tracked for k in added)} auto-tracked at priority 4-5; adjust on the Keywords tab)")
+    step_metrics(db, c, log, added)
+
+
+def step_page_keywords(db, c: Client, log, force=False):
+    """Give every rank-worthy page a primary keyword (+ up to 2 secondary) and track them."""
+    if not ai.enabled():
+        return
+    pages = [p for p in ranked_pages(c) if force or "kw_assigned" not in (p.extra or {})]
+    if not pages:
+        return
+    gsc_by_page: dict[str, list] = {}
+    for r in (c.gsc_cache or {}).get("rows", []):
+        gsc_by_page.setdefault(r["page"], []).append({"query": r["query"], "impressions": r["impressions"],
+                                                      "position": round(r["position"], 1)})
+    by_kw = {k.keyword.lower(): k for k in c.keywords}
+    has_primary = {k.target_url for k in c.keywords if k.role == "primary"}
+    log(f"Choosing target keywords for {len(pages)} page(s)")
+    added = []
+    for i in range(0, len(pages), 25):
+        batch = pages[i:i + 25]
+        taken = [k.keyword for k in c.keywords if k.target_url]
+        targets = ai.assign_page_keywords(c.profile or {}, [page_dict(p) for p in batch], gsc_by_page, taken)
+        by_url = {t["url"]: t for t in targets}
+        for p in batch:
+            t = by_url.get(p.url)
+            p.extra = {**(p.extra or {}), "kw_assigned": dt.date.today().isoformat(),
+                       "rank_worthy": bool(t and t["rank_worthy"] and t["primary_keyword"])}
+            if not p.extra["rank_worthy"]:
+                continue
+            wanted = [(t["primary_keyword"], "primary")] + [(kw, "secondary") for kw in t["secondary_keywords"][:2]]
+            for kw, role in wanted:
+                kw = kw.strip().lower()
+                if not kw:
+                    continue
+                if role == "primary" and p.url in has_primary:
+                    role = "secondary"  # keep the primary the owner already chose
+                k = by_kw.get(kw)
+                if k is None:
+                    k = Keyword(client_id=c.id, keyword=kw, source="page", location=t["location"] if role == "primary" else "",
+                                priority=max(1, min(5, t["priority"])), tracked=True, target_url=p.url, role=role)
+                    db.add(k)
+                    c.keywords.append(k)
+                    by_kw[kw] = k
+                    added.append(k)
+                elif not k.target_url or k.target_url == p.url:
+                    k.target_url, k.tracked = p.url, True
+                    k.role = k.role or role
+                if role == "primary":
+                    has_primary.add(p.url)
+        db.commit()
+    log(f"Page targets set: {len(added)} new keyword(s) tracked across {len(has_primary)} page(s)")
     step_metrics(db, c, log, added)
 
 
@@ -323,17 +437,47 @@ def step_technical(db, c: Client, site: dict, log):
 
 
 def _competitor_summaries(k: Keyword, own_domain: str, log) -> list[dict]:
-    out = []
-    for comp in (k.competitors or [])[:3]:
-        if not comp.get("url") or own_domain in (comp.get("domain") or ""):
-            continue
+    comps = [x for x in (k.competitors or []) if x.get("url") and own_domain not in (x.get("domain") or "")][:3]
+
+    def fetch(comp):
         try:
             d = crawler.Crawler(comp["url"], max_pages=1, log=lambda *_: None).fetch(crawler.normalize(comp["url"]), 0)
         except Exception:
+            return None
+        if d.get("status_code") != 200:
+            return {"rank": comp.get("rank"), "url": comp["url"], "domain": comp.get("domain"), "title": comp.get("title"),
+                    "fetched": False}
+        return {"rank": comp.get("rank"), "url": comp["url"], "domain": comp.get("domain"), "title": d.get("title"),
+                "h1": d.get("h1"), "h2": (d.get("h2") or [])[:20], "word_count": d.get("word_count"),
+                "schema": d.get("schema_types"), "faq": "FAQPage" in (d.get("schema_types") or []), "fetched": True}
+
+    with cf.ThreadPoolExecutor(max_workers=3) as pool:
+        return [x for x in pool.map(fetch, comps) if x]
+
+
+def step_wrong_page(db, c: Client, log):
+    """Flag keywords where Google ranks a different page than the one meant to rank."""
+    norm = lambda u: (u or "").rstrip("/").lower()
+    seen = set()
+    for k in c.keywords:
+        if not (k.tracked and k.target_url and k.ranking_url) or norm(k.ranking_url) == norm(k.target_url):
             continue
-        out.append({"rank": comp.get("rank"), "url": comp["url"], "title": d.get("title"), "h1": d.get("h1"),
-                    "h2": (d.get("h2") or [])[:20], "word_count": d.get("word_count"), "schema": d.get("schema_types")})
-    return out
+        fp = f"rule:wrong_page:{slug(k.keyword)}"
+        seen.add(fp)
+        upsert_rec(db, c, {
+            "fingerprint": fp, "category": "on_page", "keyword": k.keyword, "page_url": k.target_url,
+            "title": f"Google ranks the wrong page for “{k.keyword}”",
+            "details": f"Google shows **{k.ranking_url}** (position {k.position}) for “{k.keyword}”, but the page meant "
+                       f"to rank is **{k.target_url}**. Two pages competing splits their strength.\n\n"
+                       "Fix: make the target page clearly the best match (keyword in title, H1 and opening paragraph), "
+                       f"link from {k.ranking_url} to the target page with the anchor text “{k.keyword}”, and remove or "
+                       "reduce that keyword's focus on the other page. If the other page is actually the better fit, "
+                       "change the target page for this keyword on the Keywords tab instead.",
+            "impact": 6, "effort": 2, "confidence": 0.7}, k.priority)
+    for r in c.recommendations:
+        if r.fingerprint.startswith("rule:wrong_page:") and r.fingerprint not in seen and r.status in ("open", "approved"):
+            r.status, r.result, r.done_at = "resolved", "Google now ranks the intended page.", now()
+    db.commit()
 
 
 def _cooling_down(c: Client, url: str) -> bool:
@@ -342,56 +486,70 @@ def _cooling_down(c: Client, url: str) -> bool:
                and r.category in ("on_page", "content") for r in c.recommendations)
 
 
+def _review_page(db, c: Client, p: Page, kws: list[Keyword], log):
+    main = kws[0]
+    competitors = (main.analysis or {}).get("competitors") or _competitor_summaries(main, sources.domain_of(c.url), log)
+    gsc = [r for r in (c.gsc_cache or {}).get("rows", []) if r["page"] == p.url]
+    site_pages = [f"{x.url} | {x.title}" for x in ranked_pages(c)]
+    log(f"Reviewing {p.url} for {', '.join(k.keyword for k in kws)}")
+    review = ai.optimize_page(c.profile or {}, page_dict(p), [kw_view(k) for k in kws], competitors, gsc, site_pages)
+    for r in [r for r in c.recommendations if r.page_url == p.url and r.fingerprint.startswith("ai:page:") and r.status == "open"]:
+        db.delete(r)  # replace stale, unapproved suggestions for this page
+    prio = max(k.priority for k in kws)
+    for r in review["recommendations"]:
+        cat = r["category"] if r["category"] in ("on_page", "content", "local", "technical") else "on_page"
+        upsert_rec(db, c, {**r, "category": cat, "page_url": p.url, "keyword": r.get("keyword") or main.keyword,
+                           "fingerprint": f"ai:page:{p.url}:{slug(r['title'])}",
+                           "needs_approval": cat == "content"}, prio)
+    p.extra = {**(p.extra or {}), "optimized_hash": p.content_hash, "optimized_at": dt.date.today().isoformat(),
+               "main_gap": review["main_gap"], "diagnosis": review["diagnosis"]}
+    db.commit()
+
+
 def step_optimize(db, c: Client, log):
+    """Review pages on a rotation so every ranking page is reviewed at least every REVIEW_CYCLE_DAYS,
+    most urgent first: recent drops, positions 4-20, never reviewed."""
     if not ai.enabled():
-        log("Skipping AI page optimization: add ANTHROPIC_API_KEY")
+        log("Skipping AI page reviews: add ANTHROPIC_API_KEY")
         return
-    by_page: dict[str, list[Keyword]] = {}
-    for k in c.keywords:
-        if k.tracked and k.target_url:
-            by_page.setdefault(k.target_url, []).append(k)
+    by_page = page_keywords(c)
     pages = {p.url: p for p in c.pages}
+    recent_drops = {a.page_url for a in c.alerts if a.kind in ("down", "lost") and now() - a.created_at < dt.timedelta(days=14)}
+    budget = max(MIN_REVIEWS, min(MAX_REVIEWS, -(-len(by_page) * c.audit_interval_days // REVIEW_CYCLE_DAYS)))
 
-    def urgency(item):
-        url, kws = item
-        best = max(kws, key=lambda k: k.priority)
+    def urgency(url):
+        kws = by_page[url]
+        p = pages[url]
+        last = (p.extra or {}).get("optimized_at")
+        age = (dt.date.today() - dt.date.fromisoformat(last)).days if last else 999
         pos = min((k.position for k in kws if k.position), default=None)
-        striking = 1.6 if pos and 4 <= pos <= 20 else 1.2 if pos and pos > 20 else 1.0 if pos is None else 0.6
-        return sum(k.priority for k in kws) * striking + best.priority
+        striking = 2.0 if pos and 4 <= pos <= 20 else 1.3 if pos and pos > 20 else 1.2 if pos is None else 0.6
+        return (url in recent_drops) * 100 + max(k.priority for k in kws) * striking * 4 + min(age, 60)
 
-    domain = sources.domain_of(c.url)
-    gsc = (c.gsc_cache or {}).get("rows", [])
-    site_pages = [f"{p.url} | {p.title}" for p in ranked_pages(c)]
-    done = 0
-    for url, kws in sorted(by_page.items(), key=urgency, reverse=True):
-        if done >= MAX_PAGE_OPTIMIZATIONS:
-            break
+    candidates = []
+    for url in by_page:
         p = pages.get(url)
         if not p or p.status_code != 200:
             continue
         if _cooling_down(c, url):
-            log(f"Skipping {url}: changed recently, measuring impact (cooldown {config.PAGE_COOLDOWN_DAYS} days)")
             continue
-        open_ai = [r for r in c.recommendations if r.page_url == url and r.fingerprint.startswith("ai:page:") and r.status == "open"]
-        if open_ai and (p.extra or {}).get("optimized_hash") == p.content_hash:
-            continue  # page unchanged and its recommendations are still open
-        main = max(kws, key=lambda k: (k.priority, k.search_volume or 0))
-        competitors = _competitor_summaries(main, domain, log)
-        log(f"Optimizing {url} for {', '.join(k.keyword for k in kws)}")
-        recs = ai.optimize_page(c.profile or {}, page_dict(p), [kw_view(k) for k in kws], competitors,
-                                [r for r in gsc if r["page"] == url], site_pages)
-        for r in open_ai:  # replace stale, unapproved suggestions for this page
-            db.delete(r)
-        prio = max(k.priority for k in kws)
-        for i, r in enumerate(recs):
-            cat = r["category"] if r["category"] in ("on_page", "content", "local", "technical") else "on_page"
-            upsert_rec(db, c, {**r, "category": cat, "page_url": url, "keyword": r.get("keyword") or main.keyword,
-                               "fingerprint": f"ai:page:{url}:{slug(r['title'])}",
-                               "needs_approval": cat == "content"}, prio)
-        p.extra = {**(p.extra or {}), "optimized_hash": p.content_hash, "optimized_at": dt.date.today().isoformat()}
-        db.commit()
-        done += 1
-    log(f"Page optimization: reviewed {done} page(s)")
+        last = (p.extra or {}).get("optimized_at")
+        fresh = last and (dt.date.today() - dt.date.fromisoformat(last)).days < REVIEW_CYCLE_DAYS
+        if fresh and (p.extra or {}).get("optimized_hash") == p.content_hash and url not in recent_drops:
+            continue  # reviewed recently, unchanged, not slipping
+        candidates.append(url)
+    done = 0
+    for url in sorted(candidates, key=urgency, reverse=True)[:budget]:
+        try:
+            _review_page(db, c, pages[url], by_page[url], log)
+            done += 1
+        except Exception as e:
+            db.rollback()
+            log(f"WARNING: review of {url} failed: {e}")
+            if hasattr(log, "warnings"):
+                log.warnings += 1
+    log(f"Page reviews: {done} of {len(by_page)} ranking pages reviewed this run "
+        f"({len(candidates) - done} more due; every page is reviewed at least every {REVIEW_CYCLE_DAYS} days)")
 
 
 def step_new_pages(db, c: Client, log):
@@ -478,21 +636,32 @@ def step_ranks(db, c: Client, log):
     domain = sources.domain_of(c.url)
     name = (c.profile or {}).get("business_name") or c.name
     maps_seen: dict[str, int] = {}
+    log(f"Checking {len(tracked)} keyword(s) on Google (top {sources.RANK_DEPTH}) and Maps (local keywords)")
+    alerts = 0
     for k in tracked:
         try:
             org = sources.organic_rank(k.keyword, domain, c.rank_location)
-            local = sources.maps_rank(k.keyword, domain, name, c.rank_location)
+            local = sources.maps_rank(k.keyword, domain, name, c.rank_location) if is_local(k) else None
         except Exception as e:
             log(f"Rank check failed for '{k.keyword}': {e}")
             continue
-        _record_position(k, org["position"], local, org["url"], "dataforseo")
+        alert = _record_position(k, org["position"], local, org["url"], "dataforseo")
+        if alert:
+            db.add(alert)
+            alerts += 1
         k.competitors = org["top"]
+        if k.role == "primary":
+            k.analysis = {"checked": dt.date.today().isoformat(),
+                          "competitors": _competitor_summaries(k, domain, log)}
         for title, _ in org.get("local_pack", []):
             if name.lower() not in title.lower():
                 maps_seen[title] = maps_seen.get(title, 0) + 1
-        log(f"'{k.keyword}': organic {org['position'] or '>100'}, maps {local or '>20'}")
+        log(f"'{k.keyword}': Google {org['position'] or '>' + str(sources.RANK_DEPTH)}"
+            + (f", Maps {local or '>20'}" if is_local(k) else ""))
         db.commit()
-        time.sleep(0.3)
+        time.sleep(0.2)
+    if alerts:
+        log(f"{alerts} notable ranking change(s) recorded")
     c.gbp = {**(c.gbp or {}), "_maps_competitors": sorted(maps_seen, key=lambda t: -maps_seen[t])[:8]}
     c.last_rank_at = now()
     db.commit()
@@ -506,28 +675,51 @@ def job_audit(db, c: Client, log, full=True):
         c.last_audit_at = now()
         db.commit()
         return
-    step_profile(db, c, log)
-    step_gsc(db, c, log)
-    step_keywords(db, c, log)
-    step_metrics(db, c, log)
-    step_map(db, c, log)
-    step_pagespeed(db, c, log)
-    step_technical(db, c, site, log)
-    if any(k.tracked for k in c.keywords) and sources.dfs_enabled() and not c.last_rank_at:
-        step_ranks(db, c, log)
-    step_optimize(db, c, log)
-    step_new_pages(db, c, log)
-    step_blog(db, c, log)
-    step_gbp_audit(db, c, log)
-    step_measure(db, c, log)
+    safe(step_profile, db, c, log)
+    safe(step_gsc, db, c, log)
+    safe(step_keywords, db, c, log)
+    safe(step_page_keywords, db, c, log)
+    safe(step_metrics, db, c, log)
+    safe(step_map, db, c, log)
+    safe(step_pagespeed, db, c, log)
+    safe(step_technical, db, c, site, log)
+    if any(k.tracked for k in c.keywords) and sources.dfs_enabled() and ranks_due(c, slack_days=1):
+        safe(step_ranks, db, c, log)
+    safe(step_wrong_page, db, c, log)
+    safe(step_optimize, db, c, log)
+    safe(step_new_pages, db, c, log)
+    safe(step_blog, db, c, log)
+    safe(step_gbp_audit, db, c, log)
+    safe(step_measure, db, c, log)
     c.last_audit_at = now()
     db.commit()
-    log("Audit complete")
+    warn = getattr(log, "warnings", 0)
+    log("Audit complete" + (f" with {warn} warning(s): the steps above marked WARNING were skipped" if warn else ""))
+
+
+def ranks_due(c: Client, slack_days: int = 0) -> bool:
+    return not c.last_rank_at or now() - c.last_rank_at > dt.timedelta(days=c.rank_interval_days - slack_days)
 
 
 def job_ranks(db, c, log):
     step_ranks(db, c, log)
-    step_measure(db, c, log)
+    safe(step_wrong_page, db, c, log)
+    safe(step_measure, db, c, log)
+
+
+def job_review_page(db, c, log, page_id: int):
+    if not ai.enabled():
+        raise RuntimeError("Add ANTHROPIC_API_KEY to review pages")
+    p = db.get(Page, page_id)
+    kws = page_keywords(c).get(p.url)
+    if not kws:
+        raise RuntimeError("This page has no tracked keywords yet. Add one on the page screen first.")
+    _review_page(db, c, p, kws, log)
+    log("Review complete")
+
+
+def job_page_keywords(db, c, log):
+    step_page_keywords(db, c, log, force=True)
 
 
 def job_keywords(db, c, log):
@@ -576,10 +768,12 @@ def job_draft(db, c, log, rec_id: int, feedback: str = ""):
 HANDLERS = {
     "audit": job_audit, "ranks": job_ranks, "keywords": job_keywords, "profile": job_profile,
     "blog": job_blog, "gbp_audit": job_gbp_audit, "gbp_posts": job_gbp_posts, "draft": job_draft,
+    "review_page": job_review_page, "page_keywords": job_page_keywords,
 }
 JOB_LABELS = {
     "audit": "Full site audit", "ranks": "Rank check", "keywords": "Keyword ideas", "profile": "Business profile",
     "blog": "Blog ideas", "gbp_audit": "GBP audit", "gbp_posts": "GBP posts", "draft": "Content draft",
+    "review_page": "Page review", "page_keywords": "Page keyword targets",
 }
 
 
@@ -589,8 +783,7 @@ def tick():
         for c in db.scalars(select(Client).where(Client.paused.is_(False))):
             if not c.last_audit_at or now() - c.last_audit_at > dt.timedelta(days=c.audit_interval_days):
                 enqueue(c.id, "audit")
-            elif any(k.tracked for k in c.keywords) and (
-                    not c.last_rank_at or now() - c.last_rank_at > dt.timedelta(days=c.rank_interval_days)):
+            elif any(k.tracked for k in c.keywords) and ranks_due(c):
                 enqueue(c.id, "ranks")
             if c.gbp and ai.enabled():
                 upcoming = [p for p in c.posts if p.status in ("draft", "approved")]

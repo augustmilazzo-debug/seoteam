@@ -10,6 +10,11 @@
   <div class="stat"><div class="v">{{ s.awaiting_approval }}</div><div class="l">Content waiting for approval</div></div>
 </div>
 
+<h2>Where every page ranks</h2>
+<div class="row">
+  {% for label, cls, n, key in dist %}{% if n %}<a class="btn sm" href="/clients/{{ c.id }}/pages?status={{ key }}"><span class="badge {{ cls }}">{{ n }}</span> {{ label }}</a>{% endif %}{% endfor %}
+</div>
+
 {% if not c.pages and not s.running %}
 <div class="notice info" style="margin-top: 16px;">This client hasn't been audited yet. Click <b>Run audit now</b>.</div>
 {% endif %}
@@ -23,6 +28,13 @@
     </div>
   </div>
   <div>
+    <h2>Ranking changes</h2>
+    <div class="panel small" style="margin-bottom: 8px;">
+      {% for a in alerts %}<div style="padding: 4px 0;"><span class="{{ 'pos-up' if a.kind in ('up', 'new') else 'pos-down' }}">{{ '▲' if a.kind in ('up', 'new') else '▼' }}</span>
+        “{{ a.keyword }}”: {{ a.message }}{% if page_ids.get(a.page_url) %} · <a href="/pages/{{ page_ids[a.page_url] }}">page</a>{% endif %} <span class="muted">· {{ a.created_at|ago }}</span></div>
+      {% else %}<div class="muted">Moves of 3+ positions, or onto/off a Google page, show up here after each weekly check.</div>{% endfor %}
+    </div>
+
     <h2>Target keywords</h2>
     <div class="table-wrap">
       <table>

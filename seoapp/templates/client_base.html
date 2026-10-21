@@ -18,6 +18,8 @@
   <a href="/jobs/{{ s.running.id }}">Watch progress</a></div>
 {% elif s.last_job and s.last_job.status == 'failed' %}
 <div class="notice" style="margin-top: 14px;">The last job ({{ JOB_LABELS.get(s.last_job.kind) }}) failed. <a href="/jobs/{{ s.last_job.id }}">See what happened</a></div>
+{% elif s.last_job and s.last_job.status == 'warning' %}
+<div class="notice" style="margin-top: 14px;">The last {{ JOB_LABELS.get(s.last_job.kind)|lower }} finished, but some steps were skipped. <a href="/jobs/{{ s.last_job.id }}">See which</a></div>
 {% endif %}
 <div class="tabs">
   <a href="/clients/{{ c.id }}" class="{{ 'on' if tab == 'overview' }}">Overview</a>

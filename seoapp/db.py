@@ -1,9 +1,10 @@
 """Database models. SQLite by default; set DATABASE_URL for Postgres."""
 
 import datetime as dt
+import json
 
 from sqlalchemy import (
-    JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine,
+    JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, inspect, text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
@@ -41,7 +42,7 @@ class Client(Base):
     gbp: Mapped[dict] = mapped_column(JSON, default=dict)
     gsc_cache: Mapped[dict] = mapped_column(JSON, default=dict)  # {fetched, rows}
     audit_interval_days: Mapped[int] = mapped_column(Integer, default=7)
-    rank_interval_days: Mapped[int] = mapped_column(Integer, default=3)
+    rank_interval_days: Mapped[int] = mapped_column(Integer, default=7)
     last_audit_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     last_rank_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     paused: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -52,6 +53,7 @@ class Client(Base):
     recommendations: Mapped[list["Recommendation"]] = relationship(back_populates="client", cascade="all, delete-orphan")
     posts: Mapped[list["GbpPost"]] = relationship(back_populates="client", cascade="all, delete-orphan")
     jobs: Mapped[list["Job"]] = relationship(back_populates="client", cascade="all, delete-orphan")
+    alerts: Mapped[list["Alert"]] = relationship(back_populates="client", cascade="all, delete-orphan")
 
 
 class Page(Base):
@@ -106,6 +108,7 @@ class Keyword(Base):
     difficulty: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cpc: Mapped[float | None] = mapped_column(Float, nullable=True)
     target_url: Mapped[str] = mapped_column(String(1000), default="")
+    role: Mapped[str] = mapped_column(String(20), default="")  # primary | secondary | "" (for target_url's page)
     position: Mapped[float | None] = mapped_column(Float, nullable=True)
     previous_position: Mapped[float | None] = mapped_column(Float, nullable=True)
     best_position: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -114,6 +117,7 @@ class Keyword(Base):
     gsc_clicks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gsc_impressions: Mapped[int | None] = mapped_column(Integer, nullable=True)
     competitors: Mapped[list] = mapped_column(JSON, default=list)  # top results from last SERP check
+    analysis: Mapped[dict] = mapped_column(JSON, default=dict)  # top-3 competitor page comparison
     history: Mapped[list] = mapped_column(JSON, default=list)  # [{date, position, local, source}]
     last_checked: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
@@ -170,6 +174,22 @@ class GbpPost(Base):
     client: Mapped[Client] = relationship(back_populates="posts")
 
 
+class Alert(Base):
+    """A notable ranking change, e.g. a keyword moving onto or off page 1."""
+    __tablename__ = "alerts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # up | down | new | lost
+    keyword: Mapped[str] = mapped_column(String(300))
+    page_url: Mapped[str] = mapped_column(String(1000), default="")
+    old_position: Mapped[float | None] = mapped_column(Float, nullable=True)
+    new_position: Mapped[float | None] = mapped_column(Float, nullable=True)
+    message: Mapped[str] = mapped_column(String(500))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
+
+    client: Mapped[Client] = relationship(back_populates="alerts")
+
+
 class Job(Base):
     __tablename__ = "jobs"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -187,3 +207,34 @@ class Job(Base):
 
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    migrate()
+
+
+def migrate() -> None:
+    """Add columns introduced after a database was created, keeping all data.
+    New columns are filled with their model default for existing rows."""
+    insp = inspect(engine)
+    added: list[str] = []
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in have:
+                    continue
+                coltype = col.type.compile(dialect=engine.dialect)
+                conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" {coltype}'))
+                default = col.default.arg if col.default is not None else None
+                if callable(default):
+                    try:
+                        default = default()
+                    except TypeError:
+                        default = default(None)
+                if default is not None:
+                    value = json.dumps(default) if isinstance(default, (dict, list)) else default
+                    conn.execute(text(f'UPDATE {table.name} SET "{col.name}" = :v'), {"v": value})
+                added.append(f"{table.name}.{col.name}")
+        if "keywords.role" in added:
+            # Rank checks moved from every 3 days to weekly.
+            conn.execute(text("UPDATE clients SET rank_interval_days = 7 WHERE rank_interval_days = 3"))
+    if added:
+        print("Database upgraded, added:", ", ".join(added), flush=True)

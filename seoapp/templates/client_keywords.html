@@ -45,15 +45,17 @@
 <table>
   <tr>
     <th><input type="checkbox" data-check-all form="bulk"></th>
-    <th>Keyword</th><th>Volume</th><th>Difficulty</th><th>Google</th><th>Maps</th><th>Clicks (28d)</th>
+    <th>Keyword</th><th>Page</th><th>Volume</th><th>Difficulty</th><th>Google</th><th>Maps</th><th>Clicks (28d)</th>
     <th style="min-width: 380px;">Track · priority · target page</th>
   </tr>
   {% for k in kws %}
   <tr>
     <td><input type="checkbox" name="ids" value="{{ k.id }}" form="bulk"></td>
     <td><b>{{ k.keyword }}</b>
+      {% if k.role == 'primary' %}<span class="badge b-brand">primary</span>{% endif %}
       <div class="small muted">{{ k.service }}{% if k.location %} · {{ k.location }}{% endif %}{% if k.intent %} · {{ k.intent }}{% endif %} · {{ k.source }}</div>
       {% if k.ranking_url and k.target_url and k.ranking_url.rstrip('/') != k.target_url.rstrip('/') %}<div class="small" style="color: var(--high);">Google ranks a different page: {{ k.ranking_url }}</div>{% endif %}</td>
+    <td class="nowrap">{% if k.position %}Page {{ ((k.position - 1) // 10 + 1)|int }}{% elif k.last_checked %}<span class="muted">4+</span>{% else %}<span class="muted">–</span>{% endif %}</td>
     <td>{{ k.search_volume if k.search_volume is not none else '–' }}</td>
     <td>{{ k.difficulty if k.difficulty is not none else '–' }}</td>
     <td class="nowrap">{{ position(k) }} {{ spark(k) }}{% if k.best_position %}<div class="small muted">best {{ k.best_position|int }}</div>{% endif %}</td>
@@ -69,7 +71,7 @@
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="8" class="empty">No keywords yet.</td></tr>
+  <tr><td colspan="9" class="empty">No keywords yet.</td></tr>
   {% endfor %}
 </table>
 </div>

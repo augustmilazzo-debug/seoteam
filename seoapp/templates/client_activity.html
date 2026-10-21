@@ -6,7 +6,7 @@
   {% for j in jobs %}
   <tr>
     <td>{{ JOB_LABELS.get(j.kind, j.kind) }}</td>
-    <td><span class="badge {{ {'done': 'b-ok', 'failed': 'b-critical', 'running': 'b-brand', 'queued': 'b-gray'}[j.status] }}">{{ j.status }}</span></td>
+    <td><span class="badge {{ {'done': 'b-ok', 'warning': 'b-high', 'failed': 'b-critical', 'running': 'b-brand', 'queued': 'b-gray'}[j.status] }}">{{ j.status }}</span></td>
     <td class="small">{{ (j.started_at or j.created_at)|ago }}</td>
     <td class="small">{% if j.finished_at and j.started_at %}{{ ((j.finished_at - j.started_at).total_seconds() / 60)|round(1) }} min{% endif %}</td>
     <td><a href="/jobs/{{ j.id }}">Log</a></td>

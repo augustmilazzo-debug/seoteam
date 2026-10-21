@@ -13,7 +13,7 @@ from sqlalchemy import select
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import audit, config, crawler, jobs, sources
-from .db import Client, GbpPost, Job, Keyword, Recommendation, SessionLocal, init_db, now
+from .db import Client, GbpPost, Job, Keyword, Page, Recommendation, SessionLocal, init_db, now
 
 
 @asynccontextmanager
@@ -50,7 +50,8 @@ def ago(d):
 
 templates.env.filters["md"] = lambda s: md.render(s or "")
 templates.env.filters["ago"] = ago
-templates.env.globals.update(CATEGORIES=CATEGORIES, JOB_LABELS=jobs.JOB_LABELS, integrations=config.integrations)
+templates.env.globals.update(CATEGORIES=CATEGORIES, JOB_LABELS=jobs.JOB_LABELS, integrations=config.integrations,
+                             RANK_DEPTH=sources.RANK_DEPTH)
 
 
 # -- auth ---------------------------------------------------------------------
@@ -176,8 +177,13 @@ def client_overview(request: Request, cid: int):
         tracked = sorted([k for k in c.keywords if k.tracked], key=lambda k: (-k.priority, k.position or 999))
         recent_done = sorted([r for r in c.recommendations if r.status in ("done", "resolved")],
                              key=lambda r: r.done_at or r.updated_at, reverse=True)[:8]
+        rows = page_rows(c)
+        dist = [(label, cls, sum(r["status"] == k for r in rows), k) for k, label, cls in PAGE_STATUS]
+        alerts = sorted(c.alerts, key=lambda a: a.created_at, reverse=True)[:12]
+        page_ids = {p.url: p.id for p in c.pages}
         return render(request, "client_overview.html", c=c, s=client_stats(c), tab="overview",
-                      recs=open_recs(c)[:10], tracked=tracked[:15], recent_done=recent_done)
+                      recs=open_recs(c)[:10], tracked=tracked[:15], recent_done=recent_done, dist=dist,
+                      alerts=alerts, page_ids=page_ids)
 
 
 @app.get("/clients/{cid}/recommendations", response_class=HTMLResponse)
@@ -320,8 +326,63 @@ def keywords_bulk(cid: int, action: str = Form(...), ids: list[int] = Form(defau
     return RedirectResponse(f"/clients/{cid}/keywords", status_code=303)
 
 
+PAGE_STATUS = [  # key, label, badge class
+    ("top3", "Top 3", "b-ok"), ("page1", "Page 1", "b-ok"), ("page2", "Page 2", "b-medium"),
+    ("page3", "Page 3", "b-high"), ("not_ranking", f"Not in top {sources.RANK_DEPTH}", "b-critical"),
+    ("unchecked", "Not checked yet", "b-gray"), ("no_target", "No target keyword", "b-gray"),
+]
+STATUS_INFO = {k: (label, cls) for k, label, cls in PAGE_STATUS}
+
+
+def change_since(k, days: int):
+    """Positions gained (+) or lost (-) versus the latest check at least `days` ago."""
+    if not k or k.position is None:
+        return None
+    cutoff = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    older = [h for h in (k.history or [])[:-1] if h["date"] <= cutoff and h.get("position") is not None]
+    return round(older[-1]["position"] - k.position, 1) if older else None
+
+
+def page_rows(c: Client) -> list[dict]:
+    by_page = jobs.page_keywords(c)
+    open_by_page: dict[str, int] = {}
+    for r in c.recommendations:
+        if r.status in ("open", "approved") and r.page_url:
+            open_by_page[r.page_url] = open_by_page.get(r.page_url, 0) + 1
+    rows = []
+    for p in jobs.ranked_pages(c):
+        kws = by_page.get(p.url, [])
+        main = kws[0] if kws else None
+        if not main:
+            status = "no_target"
+        elif main.last_checked is None:
+            status = "unchecked"
+        elif main.position is None:
+            status = "not_ranking"
+        else:
+            status = "top3" if main.position <= 3 else f"page{min(3, jobs.google_page(main.position))}"
+        rows.append({"page": p, "kws": kws, "main": main, "status": status,
+                     "week": change_since(main, 6), "month": change_since(main, 27),
+                     "open": open_by_page.get(p.url, 0), "extra": p.extra or {}})
+    order = {k: i for i, (k, _, _) in enumerate(PAGE_STATUS)}
+    rows.sort(key=lambda r: (order[r["status"]], r["main"].position if r["main"] and r["main"].position else 999))
+    return rows
+
+
 @app.get("/clients/{cid}/pages", response_class=HTMLResponse)
-def client_pages(request: Request, cid: int):
+def client_pages(request: Request, cid: int, status: str = ""):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        rows = page_rows(c)
+        counts = {k: sum(r["status"] == k for r in rows) for k, _, _ in PAGE_STATUS}
+        if status:
+            rows = [r for r in rows if r["status"] == status]
+        return render(request, "client_pages.html", c=c, s=client_stats(c), tab="pages", rows=rows,
+                      counts=counts, statuses=PAGE_STATUS, info=STATUS_INFO, f_status=status)
+
+
+@app.get("/clients/{cid}/urls", response_class=HTMLResponse)
+def client_urls(request: Request, cid: int):
     with SessionLocal() as db:
         c = get_client(db, cid)
         pages = sorted(c.pages, key=lambda p: (p.status_code != 200, p.depth, p.url))
@@ -329,7 +390,52 @@ def client_pages(request: Request, cid: int):
         for k in c.keywords:
             if k.tracked and k.target_url:
                 targets.setdefault(k.target_url, []).append(k.keyword)
-        return render(request, "client_pages.html", c=c, s=client_stats(c), tab="pages", pages=pages, targets=targets)
+        return render(request, "client_urls.html", c=c, s=client_stats(c), tab="pages", pages=pages, targets=targets)
+
+
+@app.get("/pages/{pid}", response_class=HTMLResponse)
+def page_detail(request: Request, pid: int):
+    with SessionLocal() as db:
+        p = get_or_404(db, Page, pid)
+        c = p.client
+        row = next((r for r in page_rows(c) if r["page"].id == p.id), None)
+        recs = [r for r in open_recs(c) if r.page_url == p.url]
+        alerts = sorted([a for a in c.alerts if a.page_url == p.url], key=lambda a: a.created_at, reverse=True)[:15]
+        review_job = next((j for j in sorted(c.jobs, key=lambda j: -j.id)
+                           if j.kind == "review_page" and (j.params or {}).get("page_id") == p.id), None)
+        return render(request, "page_detail.html", c=c, s=client_stats(c), tab="pages", p=p, row=row, recs=recs,
+                      alerts=alerts, info=STATUS_INFO, review_job=review_job)
+
+
+@app.post("/pages/{pid}/review")
+def page_review(pid: int):
+    with SessionLocal() as db:
+        p = get_or_404(db, Page, pid)
+        cid = p.client_id
+    jobs.enqueue(cid, "review_page", page_id=pid)
+    return RedirectResponse(f"/pages/{pid}", status_code=303)
+
+
+@app.post("/pages/{pid}/keywords")
+def page_add_keyword(pid: int, keyword: str = Form(...), role: str = Form("secondary"), priority: int = Form(4)):
+    kw = keyword.strip().lower()
+    with SessionLocal() as db:
+        p = get_or_404(db, Page, pid)
+        c = p.client
+        if kw:
+            if role == "primary":
+                for k in c.keywords:
+                    if k.target_url == p.url and k.role == "primary":
+                        k.role = "secondary"
+            k = next((k for k in c.keywords if k.keyword.lower() == kw), None)
+            if k is None:
+                k = Keyword(client_id=c.id, keyword=kw, source="manual")
+                db.add(k)
+            k.target_url, k.role, k.tracked = p.url, role if role in ("primary", "secondary") else "secondary", True
+            k.priority = max(1, min(5, priority))
+            db.commit()
+            jobs.step_metrics(db, c, lambda *_: None, [k])
+    return RedirectResponse(f"/pages/{pid}", status_code=303)
 
 
 GBP_FIELDS = [
@@ -461,7 +567,7 @@ def client_profile_save(cid: int, business_name: str = Form(""), business_type: 
 
 @app.post("/clients/{cid}/run/{kind}")
 def client_run(request: Request, cid: int, kind: str):
-    if kind not in jobs.HANDLERS or kind == "draft":
+    if kind not in jobs.HANDLERS or kind in ("draft", "review_page"):
         raise HTTPException(400)
     jobs.enqueue(cid, kind)
     return back(request, f"/clients/{cid}")

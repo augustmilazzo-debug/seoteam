@@ -1,0 +1,94 @@
+{% extends "client_base.html" %}
+{% from "macros.html" import rec_row, position, spark %}
+{% block client %}
+<p class="small"><a href="/clients/{{ c.id }}/pages">← All pages</a></p>
+<div class="row">
+  <div class="grow">
+    <h2 style="margin: 0;">{{ p.title or p.url }}</h2>
+    <div class="small"><a href="{{ p.url }}" target="_blank" rel="noopener">{{ p.url }}</a></div>
+  </div>
+  {% if row %}<span class="badge {{ info[row.status][1] }}" style="font-size: 14px;">{{ info[row.status][0] }}</span>{% endif %}
+  <form class="inline" method="post" action="/pages/{{ p.id }}/review"><button class="primary">Review this page now</button></form>
+</div>
+{% if review_job and review_job.status in ('queued', 'running') %}
+<div class="notice info" style="margin-top: 12px;">Claude is reviewing this page against the top results (1-2 minutes). This page refreshes on its own.</div>
+<meta http-equiv="refresh" content="8">
+{% elif review_job and review_job.status == 'failed' %}
+<div class="notice" style="margin-top: 12px;">The last review failed. <a href="/jobs/{{ review_job.id }}">Details</a></div>
+{% endif %}
+
+<div class="grid two" style="margin-top: 16px;">
+  <div>
+    <h3 style="margin-top: 0;">Target keywords</h3>
+    <div class="table-wrap"><table>
+      <tr><th>Keyword</th><th>Google</th><th>Maps</th><th>Volume</th><th>Google ranks</th></tr>
+      {% for k in (row.kws if row else []) %}
+      <tr>
+        <td>{{ k.keyword }} {% if k.role == 'primary' %}<span class="badge b-brand">primary</span>{% endif %}<div class="small muted">{{ '★' * k.priority }}</div></td>
+        <td class="nowrap">{{ position(k) }} {{ spark(k) }}</td>
+        <td>{{ k.local_pack_position or '–' }}</td>
+        <td>{{ k.search_volume if k.search_volume is not none else '–' }}</td>
+        <td class="small" style="max-width: 220px; overflow-wrap: anywhere;">{% if k.ranking_url and k.ranking_url.rstrip('/') != p.url.rstrip('/') %}<span style="color: var(--high);">a different page: {{ k.ranking_url.split('//', 1)[-1] }}</span>{% elif k.ranking_url %}this page{% else %}–{% endif %}</td>
+      </tr>
+      {% else %}<tr><td colspan="5" class="muted">No target keyword yet. Add one below.</td></tr>{% endfor %}
+    </table></div>
+    <form method="post" action="/pages/{{ p.id }}/keywords" class="row" style="margin-top: 8px;">
+      <input class="grow" type="text" name="keyword" placeholder="Add a keyword for this page" required>
+      <select name="role" style="width: auto;"><option value="secondary">Secondary</option><option value="primary">Make primary</option></select>
+      <select name="priority" style="width: auto;">{% for n in [5,4,3,2,1] %}<option value="{{ n }}" {{ 'selected' if n == 4 }}>{{ '★' * n }}</option>{% endfor %}</select>
+      <button>Add</button>
+    </form>
+
+    {% set an = (row.main.analysis if row and row.main else {}) or {} %}
+    <h3>How this page compares with the top 3{% if row and row.main %} for “{{ row.main.keyword }}”{% endif %}</h3>
+    {% if an.get('competitors') %}
+    <div class="table-wrap"><table>
+      <tr><th>Result</th><th>Words</th><th>Sections</th><th>FAQ</th><th>Schema</th></tr>
+      <tr style="background: var(--brand-soft);"><td><b>This page</b>{% if row.main.position %} (#{{ row.main.position|int }}){% endif %}</td>
+        <td>{{ p.word_count }}</td><td>{{ (p.h2 or [])|length }}</td><td>{{ 'Yes' if 'FAQPage' in (p.schema_types or []) else 'No' }}</td>
+        <td class="small">{{ (p.schema_types or [])|join(', ') or '–' }}</td></tr>
+      {% for x in an.competitors %}
+      <tr><td class="small" style="max-width: 260px; overflow-wrap: anywhere;"><b>#{{ x.rank }}</b> <a href="{{ x.url }}" target="_blank" rel="noopener">{{ x.domain or x.url }}</a><div class="muted">{{ x.title }}</div></td>
+        {% if x.fetched %}<td>{{ x.word_count }}</td><td>{{ (x.h2 or [])|length }}</td><td>{{ 'Yes' if x.faq else 'No' }}</td><td class="small">{{ (x.schema or [])|join(', ') or '–' }}</td>
+        {% else %}<td colspan="4" class="small muted">Site blocked our checker</td>{% endif %}</tr>
+      {% endfor %}
+    </table></div>
+    <p class="small muted">Compared on {{ an.checked }}. Backlinks and domain authority aren't measured yet, so authority gaps are the AI's judgment.</p>
+    {% else %}
+    <p class="muted small">Appears after the next weekly rank check (needs DataForSEO).</p>
+    {% endif %}
+
+    {% if p.extra and p.extra.get('diagnosis') %}
+    <h3>Why the top results outrank this page</h3>
+    <div class="panel"><span class="badge b-high">Main gap: {{ p.extra.main_gap|capitalize }}</span>
+      <p style="margin-bottom: 0;">{{ p.extra.diagnosis }}</p>
+      <p class="small muted" style="margin-bottom: 0;">Reviewed {{ p.extra.optimized_at }}</p></div>
+    {% endif %}
+  </div>
+
+  <div>
+    <h3 style="margin-top: 0;">Page facts</h3>
+    <div class="table-wrap"><table>
+      <tr><td>Title</td><td class="small">{{ p.title }} <span class="muted">({{ (p.title or '')|length }} chars)</span></td></tr>
+      <tr><td>Meta description</td><td class="small">{{ p.meta_description or '—missing—' }}</td></tr>
+      <tr><td>H1</td><td class="small">{{ (p.h1 or ['—missing—'])|join(' / ') }}</td></tr>
+      <tr><td>Words</td><td>{{ p.word_count }}</td></tr>
+      <tr><td>Internal links in</td><td>{{ p.inlinks }}</td></tr>
+      <tr><td>Clicks from home</td><td>{{ p.depth if p.depth < 99 else 'not linked' }}</td></tr>
+      {% if p.pagespeed and p.pagespeed.performance is defined %}<tr><td>Mobile speed</td><td>{{ p.pagespeed.performance }}/100</td></tr>{% endif %}
+      <tr><td>Last changed</td><td>{{ p.changed_at|ago if p.changed_at else 'no change detected' }}</td></tr>
+    </table></div>
+
+    <h3>Ranking changes</h3>
+    <div class="panel small">
+      {% for a in alerts %}<div style="padding: 4px 0;"><span class="{{ 'pos-up' if a.kind in ('up', 'new') else 'pos-down' }}">{{ '▲' if a.kind in ('up', 'new') else '▼' }}</span> “{{ a.keyword }}”: {{ a.message }} <span class="muted">· {{ a.created_at|ago }}</span></div>
+      {% else %}<div class="muted">No notable changes yet.</div>{% endfor %}
+    </div>
+  </div>
+</div>
+
+<h2>To do for this page</h2>
+<div class="panel">
+  {% for r in recs %}{{ rec_row(r) }}{% else %}<div class="empty">Nothing open for this page.</div>{% endfor %}
+</div>
+{% endblock %}

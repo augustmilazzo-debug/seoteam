@@ -162,6 +162,49 @@ REAL GOOGLE SEARCH CONSOLE QUERIES (last 28 days; use these as evidence of deman
     return [k.model_dump() for k in _parse(KeywordPlan, prompt, effort="high").keywords]
 
 
+class PageTarget(BaseModel):
+    url: str
+    rank_worthy: bool  # false for pages not meant to rank (privacy, thank-you, login, tag archives)
+    primary_keyword: str
+    secondary_keywords: list[str]
+    priority: int  # 1-5, business value of ranking this page
+    location: str  # city the primary keyword targets, "" if none
+
+
+class PageTargets(BaseModel):
+    pages: list[PageTarget]
+
+
+def assign_page_keywords(profile: dict, pages: list[dict], gsc_by_page: dict[str, list], taken: list[str]) -> list[dict]:
+    """Choose the keywords each page should rank for."""
+    view = [{"url": p["url"], "title": p.get("title"), "h1": (p.get("h1") or [""])[0],
+             "h2": (p.get("h2") or [])[:8], "words": p.get("word_count"),
+             "text": (p.get("text") or "")[:700], "gsc_queries": gsc_by_page.get(p["url"], [])[:10]}
+            for p in pages]
+    prompt = f"""For EVERY page below, decide the search keywords it should rank for on Google.
+
+- primary_keyword: the single most valuable search this page can realistically win, written the way \
+people type it (lowercase). For service pages of a local business, include the city (e.g. \
+"lip filler newport beach"). For blog posts, use the question or topic people search. For the \
+homepage, the core service + city or brand + city.
+- secondary_keywords: 0-2 close variants or related searches the same page should also win.
+- Every page must target different keywords: no two pages may share a primary keyword, and avoid \
+keywords already used by other pages (listed below).
+- If Search Console queries are given, prefer keywords the page already gets impressions for when they \
+have real commercial value.
+- rank_worthy = false (with empty keywords) for pages that should not compete in search: privacy, \
+terms, thank-you, login, cart, author/tag/category archives, image attachment pages, near-empty pages.
+- priority 1-5 = business value of this page ranking (5 = core money service page or homepage).
+
+BUSINESS: {_j({k: profile.get(k) for k in ("business_name", "business_type", "locations", "service_areas", "services")})}
+
+KEYWORDS ALREADY USED BY OTHER PAGES: {_j(taken[:300])}
+
+PAGES:
+{_j(view)}"""
+    return [t.model_dump() for t in _parse(PageTargets, prompt).pages]
+
+
 class Mapping(BaseModel):
     keyword: str
     target_url: str
@@ -197,16 +240,29 @@ class RecList(BaseModel):
     recommendations: list[AiRec]
 
 
+class PageReview(BaseModel):
+    main_gap: str  # content | intent | local | technical | authority | none
+    diagnosis: str  # 2-4 sentences: why the top results outrank this page
+    recommendations: list[AiRec]
+
+
 def optimize_page(profile: dict, page: dict, keywords: list[dict], competitors: list[dict],
-                  gsc_queries: list[dict], site_pages: list[str]) -> list[dict]:
+                  gsc_queries: list[dict], site_pages: list[str]) -> dict:
     page_view = {k: page.get(k) for k in ("url", "title", "meta_description", "h1", "h2", "word_count",
                                          "schema_types", "inlinks", "images_missing_alt", "pagespeed")}
     page_view["text"] = (page.get("text") or "")[:9000]
     prompt = f"""Optimize this page so it ranks #1 for its target keywords.
 
-Compare it with the pages currently outranking it (if provided) and the real queries it already gets \
-impressions for. Give 3-7 recommendations, highest impact first, each a self-contained task the owner \
-can do. Cover, where needed: the title tag and meta description (write them), the H1, missing \
+First diagnose WHY the top results outrank this page. Compare content depth and topics covered, how \
+well each page matches the search intent, local relevance (city, address, map, location schema), \
+technical factors (speed, schema, title/H1 match), and the competitors' likely authority (well-known \
+directories, national brands and big sites often win on authority, not content; backlink data is not \
+available, so say "likely" when inferring it). Set main_gap to the single biggest reason: content, \
+intent, local, technical, authority, or none (if the page already ranks top 3).
+
+Then give 3-7 recommendations that close that gap, highest impact first, each a self-contained task \
+the owner can do. If the gap is mostly authority, include concrete link and citation building tasks \
+(local directories, partner sites, PR, internal links from the strongest pages). Cover, where needed: the title tag and meta description (write them), the H1, missing \
 sections/topics competitors cover (write the outline and key copy), an FAQ block (write the questions \
 and answers) with FAQPage schema, internal links to add (from which existing page, with what anchor \
 text), local relevance (city/neighborhood mentions, embedded map, location schema), trust (provider \
@@ -230,7 +286,7 @@ SEARCH CONSOLE QUERIES FOR THIS PAGE (last 28 days):
 
 OTHER PAGES ON THE SITE (for internal links):
 {_j(site_pages[:120])}"""
-    return [r.model_dump() for r in _parse(RecList, prompt).recommendations]
+    return _parse(PageReview, prompt).model_dump()
 
 
 def new_page_briefs(profile: dict, keywords: list[dict], site_pages: list[str]) -> list[dict]:

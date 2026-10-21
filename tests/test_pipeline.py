@@ -63,8 +63,16 @@ def fake_claude():
         {"keyword": "how long does botox last", "service": "Botox", "location": "", "intent": "informational",
          "priority": 2, "target_url": "", "rationale": ""}])
     mp.setattr(ai, "map_keywords", lambda kws, pages: {k: "" for k in kws})
-    mp.setattr(ai, "optimize_page", lambda profile, page, kws, comps, gsc, site_pages: [
-        rec("Rewrite the title tag", "on_page", kws[0]["keyword"]), rec("Add an FAQ section", "content", kws[0]["keyword"])])
+    mp.setattr(ai, "optimize_page", lambda profile, page, kws, comps, gsc, site_pages: {
+        "main_gap": "content", "diagnosis": "Competitors cover pricing and recovery.",
+        "recommendations": [rec("Rewrite the title tag", "on_page", kws[0]["keyword"]),
+                            rec("Add an FAQ section", "content", kws[0]["keyword"])]})
+    mp.setattr(ai, "assign_page_keywords", lambda profile, pages, gsc, taken: [
+        {"url": p["url"], "rank_worthy": "contact" not in p["url"] and "orphan" not in p["url"],
+         "primary_keyword": "" if "contact" in p["url"] or "orphan" in p["url"] else
+         ("botox newport beach" if "botox/" in p["url"] and "blog" not in p["url"] else "glow " + p["url"].rstrip("/").rsplit("/", 1)[-1].replace(":", "")),
+         "secondary_keywords": ["botox cost newport beach"] if p["url"].endswith("/services/botox/") else [],
+         "priority": 4, "location": "Newport Beach"} for p in pages])
     mp.setattr(ai, "new_page_briefs", lambda profile, kws, pages: [rec("Create an Irvine Botox page", "new_page", "botox irvine")])
     mp.setattr(ai, "blog_ideas", lambda profile, kws, titles, n=6: [rec(f"Blog idea {i}", "blog") for i in range(3)])
     mp.setattr(ai, "gbp_audit", lambda profile, gbp, kws, comps: [rec("Add secondary categories", "gbp")])
@@ -106,20 +114,22 @@ def test_full_pipeline_and_ui():
                          "no_local_schema", "slow_mobile"):
             assert expected in codes, expected
         tracked = [k for k in c.keywords if k.tracked]
-        assert {k.keyword for k in tracked} == {"botox newport beach", "lip filler newport beach", "botox irvine"}
+        assert {"botox newport beach", "lip filler newport beach", "botox irvine", "botox cost newport beach"} <= {k.keyword for k in tracked}
         cats = {r.category for r in c.recommendations}
         assert {"on_page", "content", "new_page", "blog"} <= cats
         # Scores are sorted sensibly: a critical noindex outranks a missing lang attribute
         assert all(0 <= r.score <= 100 for r in c.recommendations)
         broken = next(r for r in c.recommendations if r.fingerprint == "tech:broken_links")
         assert "broken-link" in broken.details
-        n_recs = len(c.recommendations)
+        n_tech = sum(r.fingerprint.startswith("tech:") for r in c.recommendations)
         rid = next(r.id for r in c.recommendations if r.category == "content")
 
     # Re-audit is idempotent: same issues update in place, no duplicates
     run("audit", cid)
     with SessionLocal() as db:
-        assert len(db.get(Client, cid).recommendations) == n_recs
+        recs = db.get(Client, cid).recommendations
+        assert sum(r.fingerprint.startswith("tech:") for r in recs) == n_tech
+        assert len({r.fingerprint for r in recs}) == len(recs)  # no duplicates
 
     # Fixing an issue on the site is detected and the item auto-resolves
     orphan = SITE / "orphan" / "index.html"
@@ -148,7 +158,16 @@ def test_full_pipeline_and_ui():
     from seoapp.main import app
 
     with TestClient(app) as tc:
-        for path in ["/", f"/clients/{cid}", f"/clients/{cid}/recommendations", f"/clients/{cid}/keywords",
+        with SessionLocal() as db:
+            c = db.get(Client, cid)
+            botox = next(p for p in c.pages if p.url.endswith("/services/botox/"))
+            pid = botox.id
+            assert botox.extra.get("main_gap") == "content"
+            primaries = [k for k in c.keywords if k.role == "primary"]
+            assert primaries and all(k.tracked and k.target_url for k in primaries)
+            assert len({k.target_url for k in primaries}) == len(primaries)  # one primary per page
+        for path in [f"/clients/{cid}/pages?status=unchecked", f"/pages/{pid}", f"/clients/{cid}/urls",
+                     "/", f"/clients/{cid}", f"/clients/{cid}/recommendations", f"/clients/{cid}/keywords",
                      f"/clients/{cid}/pages", f"/clients/{cid}/gbp", f"/clients/{cid}/settings",
                      f"/clients/{cid}/activity", f"/clients/{cid}/report", "/settings", f"/recommendations/{rid}",
                      f"/clients/{cid}/recommendations?status=resolved"]:
@@ -176,3 +195,16 @@ def test_login_required_when_password_set(monkeypatch):
         assert tc.post("/login", data={"password": "wrong"}).status_code == 401
         assert tc.post("/login", data={"password": "secret"}, follow_redirects=False).status_code == 303
         assert tc.get("/").status_code == 200
+
+
+def test_rank_alerts_and_wrong_page():
+    from seoapp.db import Keyword
+
+    k = Keyword(client_id=1, keyword="botox newport beach", target_url="https://x.com/botox/", priority=5, tracked=True)
+    assert jobs._record_position(k, 14, None, "https://x.com/botox/", "test") is None  # first check: no alert
+    a = jobs._record_position(k, 8, None, "https://x.com/botox/", "test")
+    assert a.kind == "up" and "page 1" in a.message
+    assert jobs._record_position(k, 9, None, "https://x.com/botox/", "test") is None  # small move: no alert
+    a = jobs._record_position(k, None, None, "", "test")
+    assert a.kind == "lost"
+    assert jobs.google_page(1) == 1 and jobs.google_page(10) == 1 and jobs.google_page(11) == 2

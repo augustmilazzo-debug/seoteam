@@ -11,7 +11,7 @@
     {% set d = k.previous_position - k.position %}
     <span class="{{ 'pos-up' if d > 0 else 'pos-down' }}">{{ '▲' if d > 0 else '▼' }}{{ (d|abs)|round(1) }}</span>
   {% endif %}
-{% elif k.last_checked %}<span class="muted">&gt;100</span>
+{% elif k.last_checked %}<span class="muted">&gt;{{ RANK_DEPTH }}</span>
 {% else %}<span class="muted">–</span>{% endif %}
 {% endmacro %}
 
