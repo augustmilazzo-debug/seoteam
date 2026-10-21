@@ -79,6 +79,27 @@ def fake_claude():
     mp.setattr(ai, "gbp_posts", lambda profile, kws, recent, n=8, month_hint="": [
         {"post_type": "update", "title": "Spring Botox refresh", "body": "Text", "cta": "BOOK", "link": BASE,
          "keyword": "botox newport beach", "image_idea": "Treatment room", "days_from_now": 2}])
+    mp.setattr(ai, "blog_plan", lambda profile, kws, existing, questions, n=6: [
+        {"title": "How Long Does Lip Filler Last?", "target_keyword": "how long does lip filler last",
+         "secondary_keywords": [], "search_intent": "informational", "angle": "Top question", "outline": "## A",
+         "supports_url": BASE + "services/lip-filler/", "priority": 5},
+        {"title": "Botox vs Dysport", "target_keyword": "botox vs dysport", "secondary_keywords": [],
+         "search_intent": "comparison", "angle": "Comparison", "outline": "## B", "supports_url": "", "priority": 4}])
+    mp.setattr(ai, "write_blog", lambda profile, post, pages, comps: {
+        "title": "How Long Does Lip Filler Last? A Newport Beach Guide", "meta_title": "How Long Does Lip Filler Last? | Glow MedSpa",
+        "meta_description": "Lip filler usually lasts 6-12 months. Learn what affects longevity, how to make results last, and when to book a touch-up in Newport Beach.",
+        "slug": "how-long-does-lip-filler-last", "excerpt": "x",
+        "answer_summary": "How long does lip filler last? Most lip filler lasts 6 to 12 months depending on the product and your metabolism.",
+        "key_takeaways": ["Lasts 6-12 months"],
+        "body_markdown": "## How long does lip filler last?\n\nText with [our lip filler](" + BASE + "services/lip-filler/) and [about](" + BASE + "about/).\n\n[[visual:1]]\n\n## What affects it?\n\n[[visual:2]]\n\n## Aftercare\n\ntext <script>alert(1)</script>\n\n## Book\n\n[[visual:3]]",
+        "faqs": [{"question": f"Q{i}?", "answer": "A."} for i in range(4)],
+        "visuals": [{"kind": "table", "title": "Products", "caption": "c", "columns": ["Product", "Lasts"], "rows": [["Juvederm", "12 mo"]],
+                     "labels": [], "values": [], "unit": "", "photo_brief": "", "alt_text": "table"},
+                    {"kind": "bar_chart", "title": "Months", "caption": "c", "columns": [], "rows": [], "labels": ["A", "B"],
+                     "values": [6, 12], "unit": "months", "photo_brief": "", "alt_text": "chart"},
+                    {"kind": "photo", "title": "", "caption": "c", "columns": [], "rows": [], "labels": [], "values": [], "unit": "",
+                     "photo_brief": "Treatment room", "alt_text": "treatment room"}],
+        "references": ["FDA"]})
     mp.setattr(ai, "write_draft", lambda profile, rec, page, feedback="": "# Draft\n\nHello")
     mp.setattr(jobs.sources, "pagespeed", lambda url: {"performance": 42, "lcp_ms": 5200, "cls": 0.2,
                                                        "opportunities": ["Properly size images"], "checked": "x"})
@@ -116,7 +137,8 @@ def test_full_pipeline_and_ui():
         tracked = [k for k in c.keywords if k.tracked]
         assert {"botox newport beach", "lip filler newport beach", "botox irvine", "botox cost newport beach"} <= {k.keyword for k in tracked}
         cats = {r.category for r in c.recommendations}
-        assert {"on_page", "content", "new_page", "blog"} <= cats
+        assert {"on_page", "content", "new_page"} <= cats
+        assert len([b for b in c.blog_posts if b.status == "idea"]) == 2
         # Scores are sorted sensibly: a critical noindex outranks a missing lang attribute
         assert all(0 <= r.score <= 100 for r in c.recommendations)
         broken = next(r for r in c.recommendations if r.fingerprint == "tech:broken_links")
@@ -208,3 +230,87 @@ def test_rank_alerts_and_wrong_page():
     a = jobs._record_position(k, None, None, "", "test")
     assert a.kind == "lost"
     assert jobs.google_page(1) == 1 and jobs.google_page(10) == 1 and jobs.google_page(11) == 2
+
+
+class FakeWordPress(http.server.BaseHTTPRequestHandler):
+    posts: dict = {}
+
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, body):
+        import json as _json
+        data = _json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _authed(self):
+        import base64 as _b64
+        return self.headers.get("Authorization") == "Basic " + _b64.b64encode(b"editor:app pass").decode()
+
+    def do_GET(self):
+        if not self._authed():
+            return self._send(401, {"message": "bad login"})
+        if self.path.startswith("/wp-json/wp/v2/users/me"):
+            return self._send(200, {"name": "Editor", "roles": ["editor"]})
+        self._send(404, {"message": "nope"})
+
+    def do_POST(self):
+        import json as _json
+        if not self._authed():
+            return self._send(401, {"message": "bad login"})
+        body = _json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if "meta" in body:  # like a site without an SEO plugin exposing these fields
+            return self._send(400, {"message": "Invalid parameter(s): meta"})
+        pid = self.path.rstrip("/").rsplit("/", 1)[-1]
+        pid = pid if pid.isdigit() else str(100 + len(self.posts))
+        self.posts[pid] = body
+        self._send(200, {"id": int(pid)})
+
+
+def test_blog_engine_and_wordpress_sync():
+    from fastapi.testclient import TestClient
+    from seoapp.db import BlogPost
+    from seoapp.main import app
+
+    wp_server = http.server.ThreadingHTTPServer(("127.0.0.1", 8802), FakeWordPress)
+    threading.Thread(target=wp_server.serve_forever, daemon=True).start()
+    try:
+        with SessionLocal() as db:
+            c = db.scalars(__import__("sqlalchemy").select(Client)).first()
+            cid = c.id
+            idea = next(b for b in c.blog_posts if b.target_keyword == "how long does lip filler last")
+            bid = idea.id
+        run("blog_write", cid, post_id=bid)
+        with TestClient(app) as tc:
+            page = tc.get(f"/blog/{bid}").text
+            assert "Quick answer" in page and "<table>" in page and "months" in page and "Add photo" in page
+            assert "<script>alert" not in page  # model output is escaped in the preview
+            assert "of 13 passed" in page
+            r = tc.post(f"/clients/{cid}/wordpress", data={"wp_url": "http://127.0.0.1:8802", "wp_user": "editor",
+                                                          "wp_app_password": "wrong", "action": "test"})
+            assert "Connection failed" in r.text
+            r = tc.post(f"/clients/{cid}/wordpress", data={"wp_url": "http://127.0.0.1:8802", "wp_user": "editor",
+                                                          "wp_app_password": "app pass", "action": "test"})
+            assert "Connected as Editor" in r.text
+            tc.post(f"/blog/{bid}/status", data={"status": "approved"})
+            r = tc.post(f"/blog/{bid}/sync")
+            assert "Sent to WordPress as a draft" in r.text
+            assert "Open the draft in WordPress" in r.text
+            sent = FakeWordPress.posts["100"]
+            assert sent["status"] == "draft" and sent["slug"] == "how-long-does-lip-filler-last"
+            assert "application/ld+json" in sent["content"] and "FAQPage" in sent["content"]
+            tc.post(f"/blog/{bid}/sync")  # second sync updates the same draft
+            assert list(FakeWordPress.posts) == ["100"]
+            r = tc.post(f"/clients/{cid}/blog/new", data={"title": "Our spring specials", "notes": "x"},
+                        follow_redirects=False)
+            assert r.status_code == 303
+            assert tc.get(f"/clients/{cid}/blog").status_code == 200
+            assert tc.get(f"/blog/{bid}/export.html").status_code == 200
+        with SessionLocal() as db:
+            assert db.get(BlogPost, bid).status == "synced"
+    finally:
+        wp_server.shutdown()

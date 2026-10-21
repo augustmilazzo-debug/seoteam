@@ -12,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import select
 
 from . import ai, audit, config, crawler, scoring, sources
-from .db import Alert, Client, GbpPost, Job, Keyword, Page, Recommendation, SessionLocal, now
+from .db import Alert, BlogPost, Client, GbpPost, Job, Keyword, Page, Recommendation, SessionLocal, now
 
 REVIEW_CYCLE_DAYS = 28  # every ranking page gets a full AI review at least this often
 MIN_REVIEWS, MAX_REVIEWS = 6, 25  # AI page reviews per audit, to spread cost evenly
@@ -23,10 +23,11 @@ _wake = threading.Event()
 # -- queue --------------------------------------------------------------------
 def enqueue(client_id: int, kind: str, **params) -> int:
     with SessionLocal() as db:
-        existing = db.scalar(select(Job).where(Job.client_id == client_id, Job.kind == kind,
-                                               Job.status.in_(["queued", "running"])))
-        if existing and kind not in ("draft",):
-            return existing.id
+        active = db.scalars(select(Job).where(Job.client_id == client_id, Job.kind == kind,
+                                              Job.status.in_(["queued", "running"]))).all()
+        same = next((j for j in active if (j.params or {}) == params), None)
+        if same:  # already queued with the same inputs (e.g. a double click)
+            return same.id
         job = Job(client_id=client_id, kind=kind, params=params)
         db.add(job)
         db.commit()
@@ -570,20 +571,90 @@ def step_new_pages(db, c: Client, log):
     db.commit()
 
 
+QUESTION = re.compile(r"^(how|what|why|when|is|are|can|does|do|which|who|should|best|cost|price)\b|\bvs\b|\bcost\b", re.I)
+
+
 def step_blog(db, c: Client, log, force=False):
+    """Keep the blog idea queue stocked from the target keywords."""
     if not ai.enabled():
         return
-    open_blogs = [r for r in c.recommendations if r.category == "blog" and r.status in ("open", "approved")]
-    if len(open_blogs) >= 3 and not force:
-        return
-    blog_titles = [p.title for p in c.pages if re.search(r"/(blog|news|articles?|posts?)/|/\d{4}/\d{2}/", p.url)]
-    blog_titles += [r.title for r in c.recommendations if r.category == "blog"]
-    log("Generating blog ideas")
-    recs = ai.blog_ideas(c.profile or {}, [kw_view(k) for k in c.keywords if k.tracked], blog_titles)
-    for r in recs:
-        upsert_rec(db, c, {**r, "category": "blog", "fingerprint": f"ai:blog:{slug(r['title'])}", "needs_approval": True},
-                   3)
+    # One-time move of older blog recommendations into the blog engine
+    for r in c.recommendations:
+        if r.category == "blog" and r.status == "open":
+            db.add(BlogPost(client_id=c.id, title=r.title, target_keyword=r.keyword, angle=r.details,
+                            priority=3, source="ai"))
+            r.status, r.result = "dismissed", "Moved to the Blog tab."
     db.commit()
+    waiting = [b for b in c.blog_posts if b.status == "idea"]
+    if len(waiting) >= 4 and not force:
+        return
+    by_page = page_keywords(c)
+    kws = [{**kw_view(k), "page": url} for url, ks in by_page.items() for k in ks]
+    kws.sort(key=lambda k: (-k["priority"], -(k["search_volume"] or 0)))
+    questions = sorted({r["query"] for r in (c.gsc_cache or {}).get("rows", []) if QUESTION.search(r["query"])})
+    existing = [b.title for b in c.blog_posts]
+    existing += [p.title for p in c.pages if re.search(r"/(blog|news|articles?|posts?)/|/\d{4}/\d{2}/", p.url)]
+    log("Planning blog posts from the target keywords")
+    ideas = ai.blog_plan(c.profile or {}, kws, existing, questions)
+    valid = {p.url for p in c.pages}
+    have = {b.target_keyword.lower() for b in c.blog_posts if b.target_keyword}
+    added = []
+    for i in ideas:
+        kw = i["target_keyword"].strip().lower()
+        if kw in have:
+            continue
+        have.add(kw)
+        b = BlogPost(client_id=c.id, source="ai", title=i["title"], target_keyword=kw,
+                     secondary_keywords=i["secondary_keywords"], search_intent=i["search_intent"], angle=i["angle"],
+                     outline=i["outline"], supports_url=i["supports_url"] if i["supports_url"] in valid else "",
+                     priority=max(1, min(5, i["priority"])))
+        db.add(b)
+        added.append(b)
+    db.commit()
+    if added and sources.dfs_enabled():
+        try:
+            m = sources.keyword_metrics([b.target_keyword for b in added])
+            for b in added:
+                b.search_volume = m.get(b.target_keyword, {}).get("search_volume")
+            db.commit()
+        except Exception as e:
+            log(f"Blog keyword volumes unavailable: {e}")
+    log(f"Added {len(added)} blog idea(s)")
+
+
+def job_blog_write(db, c: Client, log, post_id: int):
+    if not ai.enabled():
+        raise RuntimeError("Add ANTHROPIC_API_KEY to write posts")
+    b = db.get(BlogPost, post_id)
+    b.status, b.updated_at = "writing", now()
+    db.commit()
+    competitors = []
+    if sources.dfs_enabled() and b.target_keyword:
+        try:
+            org = sources.organic_rank(b.target_keyword, sources.domain_of(c.url), c.rank_location)
+            tmp = Keyword(keyword=b.target_keyword, competitors=org["top"])
+            competitors = _competitor_summaries(tmp, sources.domain_of(c.url), log)
+            log(f"Studied {len(competitors)} page(s) ranking for '{b.target_keyword}'")
+        except Exception as e:
+            log(f"Could not study competing pages: {e}")
+    post = {"title": b.title, "target_keyword": b.target_keyword, "secondary_keywords": b.secondary_keywords,
+            "search_intent": b.search_intent, "angle_or_owner_notes": b.angle, "outline": b.outline,
+            "supporting_service_page": b.supports_url, "revision_feedback": b.feedback,
+            "previous_draft": b.body[:6000] if b.feedback and b.body else ""}
+    log(f"Writing '{b.title}' (usually 2-4 minutes)")
+    try:
+        art = ai.write_blog(c.profile or {}, post, [f"{p.url} | {p.title}" for p in ranked_pages(c)], competitors)
+    except Exception:
+        b.status = "review" if b.body else "idea"
+        db.commit()
+        raise
+    b.title, b.meta_title, b.meta_description = art["title"], art["meta_title"], art["meta_description"]
+    b.slug, b.excerpt, b.answer_summary = slug(art["slug"] or art["title"]), art["excerpt"], art["answer_summary"]
+    b.key_takeaways, b.body, b.faqs = art["key_takeaways"], art["body_markdown"], art["faqs"]
+    b.visuals, b.references = art["visuals"], art["references"]
+    b.status, b.feedback, b.updated_at = "review", "", now()
+    db.commit()
+    log("Draft ready for your review on the Blog tab")
 
 
 def step_gbp_audit(db, c: Client, log, force=False):
@@ -768,12 +839,12 @@ def job_draft(db, c, log, rec_id: int, feedback: str = ""):
 HANDLERS = {
     "audit": job_audit, "ranks": job_ranks, "keywords": job_keywords, "profile": job_profile,
     "blog": job_blog, "gbp_audit": job_gbp_audit, "gbp_posts": job_gbp_posts, "draft": job_draft,
-    "review_page": job_review_page, "page_keywords": job_page_keywords,
+    "review_page": job_review_page, "page_keywords": job_page_keywords, "blog_write": job_blog_write,
 }
 JOB_LABELS = {
     "audit": "Full site audit", "ranks": "Rank check", "keywords": "Keyword ideas", "profile": "Business profile",
     "blog": "Blog ideas", "gbp_audit": "GBP audit", "gbp_posts": "GBP posts", "draft": "Content draft",
-    "review_page": "Page review", "page_keywords": "Page keyword targets",
+    "review_page": "Page review", "page_keywords": "Page keyword targets", "blog_write": "Blog post writing",
 }
 
 

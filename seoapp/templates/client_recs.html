@@ -21,6 +21,6 @@
   {% for r in recs %}{{ rec_row(r) }}{% else %}<div class="empty">No recommendations match.</div>{% endfor %}
 </div>
 <div class="row noprint" style="margin-top: 14px;">
-  <form class="inline" method="post" action="/clients/{{ c.id }}/run/blog"><button>Suggest more blog posts</button></form>
+  <a class="btn" href="/clients/{{ c.id }}/blog">Blog ideas and posts →</a>
 </div>
 {% endblock %}

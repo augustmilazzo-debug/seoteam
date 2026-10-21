@@ -51,6 +51,24 @@
   </div>
 </div>
 
+<div class="panel" style="margin-top: 24px;" id="wordpress">
+  <h3 style="margin-top: 0;">WordPress connection (for sending blog drafts)</h3>
+  {% if request.query_params.get('wp_msg') %}<div class="notice ok">{{ request.query_params.get('wp_msg') }}</div>{% endif %}
+  {% if request.query_params.get('wp_err') %}<div class="notice"><b>Connection failed:</b> {{ request.query_params.get('wp_err') }}</div>{% endif %}
+  <p class="small muted">In the client's WordPress: <b>Users → Profile</b> (an Editor or Administrator account) → <b>Application Passwords</b> → name it "SEO Command Center" → <b>Add New Application Password</b>, and paste it below. Drafts are never published automatically.</p>
+  <form method="post" action="/clients/{{ c.id }}/wordpress">
+    <div class="row">
+      <div class="grow"><label>Site address</label><input type="text" name="wp_url" value="{{ (c.wp or {}).get('url', c.url) }}"></div>
+      <div class="grow"><label>WordPress username</label><input type="text" name="wp_user" value="{{ (c.wp or {}).get('user', '') }}"></div>
+      <div class="grow"><label>Application Password</label><input type="password" name="wp_app_password" placeholder="{{ '•••••••• (saved; leave blank to keep)' if (c.wp or {}).get('app_password') else 'xxxx xxxx xxxx xxxx xxxx xxxx' }}"></div>
+    </div>
+    <div class="row" style="margin-top: 10px;">
+      <button class="primary" name="action" value="test">Save and test connection</button>
+      {% if c.wp %}<button class="danger" name="action" value="disconnect">Disconnect</button>{% endif %}
+    </div>
+  </form>
+</div>
+
 <div class="panel" style="margin-top: 24px;">
   <h3 style="margin-top: 0;">Delete client</h3>
   <form method="post" action="/clients/{{ c.id }}/delete" class="row">

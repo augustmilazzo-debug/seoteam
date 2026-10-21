@@ -1,0 +1,104 @@
+{% extends "client_base.html" %}
+{% block client %}
+<p class="small"><a href="/clients/{{ c.id }}/blog">← Blog</a></p>
+{% if msg %}<div class="notice ok">{{ msg }}</div>{% endif %}
+{% if err %}<div class="notice"><b>Couldn't send to WordPress:</b> {{ err }}</div>{% endif %}
+<div class="row">
+  <div class="grow"><h2 style="margin: 0;">{{ b.title }}</h2>
+    <div class="small muted">Target keyword: <b>{{ b.target_keyword or '–' }}</b>{% if b.search_volume %} · {{ b.search_volume }} searches/mo{% endif %}{% if b.supports_url %} · supports <a href="{{ b.supports_url }}" target="_blank" rel="noopener">{{ b.supports_url.split('//', 1)[-1] }}</a>{% endif %}</div></div>
+  <span class="badge {{ stages[b.status][1] }}" style="font-size: 14px;">{{ stages[b.status][0] }}</span>
+</div>
+
+{% if job and job.status in ('queued', 'running') %}
+<div class="notice info" style="margin-top: 14px;">Claude is writing this post (usually 2-4 minutes). This page refreshes on its own. <a href="/jobs/{{ job.id }}">Progress</a></div>
+<meta http-equiv="refresh" content="10">
+{% elif job and job.status == 'failed' %}
+<div class="notice" style="margin-top: 14px;">Writing failed. <a href="/jobs/{{ job.id }}">See why</a>, then try again.</div>
+{% endif %}
+
+{% if not b.body %}
+<div class="panel" style="margin-top: 16px;">
+  {% if b.angle %}<h3 style="margin-top: 0;">Why this post</h3><div class="md">{{ b.angle|md|safe }}</div>{% endif %}
+  {% if b.outline %}<h3>Outline</h3><div class="md">{{ b.outline|md|safe }}</div>{% endif %}
+  {% if not (job and job.status in ('queued', 'running')) %}
+  <form method="post" action="/blog/{{ b.id }}/write"><button class="primary">Write this post</button></form>
+  {% endif %}
+</div>
+{% else %}
+<div class="grid two" style="margin-top: 16px;">
+  <div>
+    <div class="panel">
+      <div class="row" style="margin-bottom: 8px;">
+        <span class="small muted grow">Preview: how the post body will look (the title and SEO fields go into WordPress separately)</span>
+        <a class="btn sm" href="/blog/{{ b.id }}/export.html">Download HTML</a>
+        <button type="button" class="sm" data-copy="post-html">Copy HTML</button>
+      </div>
+      <h1 style="font-size: 26px;">{{ b.title }}</h1>
+      <div class="md blog-preview">{{ preview|safe }}</div>
+      <textarea id="post-html" style="display: none;">{{ preview }}</textarea>
+    </div>
+
+    <h2>Edit</h2>
+    <form method="post" action="/blog/{{ b.id }}/save" class="panel">
+      <label>Title (H1)</label><input type="text" name="title" value="{{ b.title }}">
+      <label>SEO title <span class="muted">({{ b.meta_title|length }} chars)</span></label><input type="text" name="meta_title" value="{{ b.meta_title }}">
+      <label>Meta description <span class="muted">({{ b.meta_description|length }} chars)</span></label><textarea name="meta_description" style="min-height: 60px;">{{ b.meta_description }}</textarea>
+      <div class="row"><div class="grow"><label>URL slug</label><input type="text" name="slug" value="{{ b.slug }}"></div>
+        <div class="grow"><label>Target keyword</label><input type="text" name="target_keyword" value="{{ b.target_keyword }}"></div></div>
+      <label>Quick answer (shown at the top)</label><textarea name="answer_summary" style="min-height: 70px;">{{ b.answer_summary }}</textarea>
+      <label>Article (markdown; [[visual:1]] marks where each visual goes)</label>
+      <textarea name="body" style="min-height: 420px; font-family: ui-monospace, monospace; font-size: 13px;">{{ b.body }}</textarea>
+      <label>FAQs (Q: question, then A: answer)</label>
+      <textarea name="faqs" style="min-height: 160px;">{{ faq_text }}</textarea>
+      <div class="row" style="margin-top: 10px;">
+        <button name="action" value="save">Save edits</button>
+        <button class="primary" name="action" value="approve">Save and approve</button>
+      </div>
+    </form>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h3 style="margin-top: 0;">Publish</h3>
+      {% if b.status in ('approved', 'synced') %}
+        {% if c.wp and c.wp.get('url') %}
+        <form method="post" action="/blog/{{ b.id }}/sync"><button class="primary" style="width: 100%;">{{ 'Update the WordPress draft' if b.cms_id else 'Send to WordPress as a draft' }}</button></form>
+        {% if b.cms_edit_url %}<p class="small"><a href="{{ b.cms_edit_url }}" target="_blank" rel="noopener">Open the draft in WordPress →</a> (sent {{ b.synced_at|ago }})</p>{% endif %}
+        {% else %}
+        <p class="small">Connect this client's WordPress in <a href="/clients/{{ c.id }}/settings#wordpress">Settings</a> to send drafts with one click. Otherwise use <b>Copy HTML</b> and paste into the editor (WordPress: Code editor; Wix/Squarespace/Webflow: an HTML/embed block).</p>
+        {% endif %}
+        <form method="post" action="/blog/{{ b.id }}/status" style="margin-top: 8px;"><input type="hidden" name="status" value="published"><button class="ok" style="width: 100%;">I published it</button></form>
+      {% elif b.status == 'review' %}
+        <p class="small">Review the post, edit anything, then approve it to send it to WordPress.</p>
+        <form method="post" action="/blog/{{ b.id }}/status"><input type="hidden" name="status" value="approved"><button class="primary" style="width: 100%;">Approve</button></form>
+      {% elif b.status == 'published' %}
+        <p class="small">Published. Its keyword can be tracked from the Keywords tab.</p>
+      {% endif %}
+      <form method="post" action="/blog/{{ b.id }}/write" style="margin-top: 14px;">
+        <label style="margin-top: 0;">Ask for a rewrite</label>
+        <textarea name="feedback" style="min-height: 70px;" placeholder="e.g. more about recovery, mention our $12/unit special, friendlier tone"></textarea>
+        <button style="margin-top: 6px;">Rewrite</button>
+      </form>
+      {% if b.status not in ('rejected', 'published') %}
+      <form method="post" action="/blog/{{ b.id }}/status" style="margin-top: 10px;"><input type="hidden" name="status" value="rejected"><button class="sm danger">Reject this post</button></form>
+      {% endif %}
+    </div>
+
+    <h3>SEO and AI-answer checklist</h3>
+    <div class="panel small">
+      {% for ok, label in checks %}<div style="padding: 3px 0;">{{ '✅' if ok else '⚠️' }} {{ label }}</div>{% endfor %}
+      <p class="muted" style="margin-bottom: 0;">{{ checks|selectattr(0)|list|length }} of {{ checks|length }} passed</p>
+    </div>
+
+    {% if b.visuals %}
+    <h3>Visuals</h3>
+    <div class="panel small">
+      {% for v in b.visuals %}<div style="padding: 4px 0;"><b>{{ loop.index }}. {{ v.kind|replace('_', ' ')|capitalize }}</b>: {{ v.title or v.caption }}
+        {% if v.kind == 'photo' %}<div class="muted">Add a photo: {{ v.photo_brief }}</div>{% endif %}
+        <div class="muted">Alt text: {{ v.alt_text }}</div></div>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

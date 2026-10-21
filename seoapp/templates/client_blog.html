@@ -1,0 +1,58 @@
+{% extends "client_base.html" %}
+{% block client %}
+<div class="grid two">
+  <div class="panel">
+    <h3 style="margin-top: 0;">How the blog engine works</h3>
+    <ol class="small" style="padding-left: 18px; margin: 0;">
+      <li><b>Ideas</b> come from your target keywords and the questions people search, ranked by priority. Add your own on the right.</li>
+      <li>Click <b>Write it</b>. Claude studies the pages ranking for the keyword and writes a full post built for Google and AI answers: quick answer, takeaways, question headings, tables/charts, FAQs, schema and internal links.</li>
+      <li><b>Review</b> it, edit anything, ask for a rewrite, then <b>Approve</b>.</li>
+      <li><b>Send to WordPress</b> creates a draft in the client's WordPress for final review and publishing. For other platforms, copy or download the HTML.</li>
+    </ol>
+    <form method="post" action="/clients/{{ c.id }}/run/blog" style="margin-top: 12px;"><button>Suggest more blog ideas</button></form>
+  </div>
+  <div class="panel">
+    <h3 style="margin-top: 0;">Write your own post</h3>
+    <form method="post" action="/clients/{{ c.id }}/blog/new">
+      <input type="text" name="title" placeholder="Topic or working title, e.g. Botox vs Dysport: which lasts longer?" required>
+      <div class="row" style="margin-top: 8px;">
+        <input class="grow" type="text" name="target_keyword" placeholder="Target keyword (optional)">
+        <input class="grow" type="text" name="supports_url" list="pages" placeholder="Service page to link to (optional)">
+      </div>
+      <textarea name="notes" style="margin-top: 8px; min-height: 70px;" placeholder="Anything to include: angle, offers, provider quotes, facts about the clinic…"></textarea>
+      <div class="row" style="margin-top: 8px;">
+        <label class="check" style="margin: 0;"><input type="checkbox" name="write_now" checked> Write it now</label>
+        <button class="primary">Create post</button>
+      </div>
+    </form>
+    <datalist id="pages">{% for u in pages %}<option value="{{ u }}">{% endfor %}</datalist>
+  </div>
+</div>
+
+{% for st, label, cls, posts in groups %}{% if posts %}
+<h2>{{ label }} <span class="muted small">({{ posts|length }})</span></h2>
+<div class="table-wrap"><table>
+  <tr><th>Post</th><th>Target keyword</th><th>Volume</th><th>Priority</th><th></th></tr>
+  {% for b in posts %}
+  <tr>
+    <td><a href="/blog/{{ b.id }}"><b>{{ b.title }}</b></a>
+      <div class="small muted">{{ 'Your idea' if b.source == 'manual' else 'Suggested' }}{% if b.search_intent %} · {{ b.search_intent }}{% endif %} · updated {{ b.updated_at|ago }}</div></td>
+    <td class="small">{{ b.target_keyword or '–' }}</td>
+    <td>{{ b.search_volume if b.search_volume is not none else '–' }}</td>
+    <td class="small">{{ '★' * b.priority }}</td>
+    <td class="nowrap">
+      {% if st == 'idea' %}
+        <form class="inline" method="post" action="/blog/{{ b.id }}/write"><button class="sm primary">Write it</button></form>
+        <form class="inline" method="post" action="/blog/{{ b.id }}/status"><input type="hidden" name="status" value="rejected"><button class="sm">Skip</button></form>
+      {% elif st == 'review' %}<a class="btn sm btn-primary" href="/blog/{{ b.id }}">Review</a>
+      {% elif st == 'synced' and b.cms_edit_url %}<a class="btn sm" href="{{ b.cms_edit_url }}" target="_blank" rel="noopener">Open in WordPress</a>
+      {% else %}<a class="btn sm" href="/blog/{{ b.id }}">Open</a>{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table></div>
+{% endif %}{% endfor %}
+{% if not groups|map(attribute=3)|select|list %}
+<div class="panel empty" style="margin-top: 20px;">No posts yet. Click <b>Suggest more blog ideas</b>, or write your own above.</div>
+{% endif %}
+{% endblock %}

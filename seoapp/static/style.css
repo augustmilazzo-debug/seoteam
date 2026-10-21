@@ -98,3 +98,8 @@ details summary { cursor: pointer; font-weight: 600; }
   header.top, .noprint { display: none !important; }
   body { background: #fff; }
 }
+.blog-preview h2 { font-size: 20px; margin-top: 24px; }
+.blog-preview h3 { font-size: 16px; }
+.blog-preview figure { margin: 18px 0; }
+.blog-preview table { border: 1px solid var(--line); }
+.blog-preview .seo-answer, .blog-preview .seo-photo-slot { color: #1d2330; }

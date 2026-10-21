@@ -2,6 +2,8 @@
 
 import datetime as dt
 import hmac
+from html import escape as html_escape
+from urllib.parse import quote
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -12,8 +14,8 @@ from markdown_it import MarkdownIt
 from sqlalchemy import select
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import audit, config, crawler, jobs, sources
-from .db import Client, GbpPost, Job, Keyword, Page, Recommendation, SessionLocal, init_db, now
+from . import audit, blog, config, crawler, jobs, sources
+from .db import BlogPost, Client, GbpPost, Job, Keyword, Page, Recommendation, SessionLocal, init_db, now
 
 
 @asynccontextmanager
@@ -125,7 +127,7 @@ def client_stats(c: Client) -> dict:
         "maps_top3": sum(1 for k in tracked if k.local_pack_position and k.local_pack_position <= 3),
         "pages": len(jobs.html_pages(c)),
         "awaiting_approval": sum(1 for r in c.recommendations if r.draft_status == "draft")
-        + sum(1 for p in c.posts if p.status == "draft"),
+        + sum(1 for p in c.posts if p.status == "draft") + sum(1 for b in c.blog_posts if b.status == "review"),
         "running": next((j for j in sorted(c.jobs, key=lambda j: -j.id) if j.status in ("queued", "running")), None),
         "last_job": next((j for j in sorted(c.jobs, key=lambda j: -j.id)), None),
     }
@@ -436,6 +438,156 @@ def page_add_keyword(pid: int, keyword: str = Form(...), role: str = Form("secon
             db.commit()
             jobs.step_metrics(db, c, lambda *_: None, [k])
     return RedirectResponse(f"/pages/{pid}", status_code=303)
+
+
+BLOG_STAGES = [  # status, label, badge
+    ("review", "Ready for your review", "b-high"), ("writing", "Being written", "b-brand"),
+    ("idea", "Ideas", "b-gray"), ("approved", "Approved", "b-brand"), ("synced", "Draft in WordPress", "b-ok"),
+    ("published", "Published", "b-ok"), ("rejected", "Rejected", "b-gray"),
+]
+
+
+@app.get("/clients/{cid}/blog", response_class=HTMLResponse)
+def client_blog(request: Request, cid: int):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        groups = []
+        for st, label, cls in BLOG_STAGES:
+            posts = sorted([b for b in c.blog_posts if b.status == st],
+                           key=lambda b: (-b.priority, -(b.search_volume or 0), -b.id))
+            groups.append((st, label, cls, posts))
+        pages = [p.url for p in jobs.ranked_pages(c)]
+        return render(request, "client_blog.html", c=c, s=client_stats(c), tab="blog", groups=groups, pages=pages)
+
+
+@app.post("/clients/{cid}/blog/new")
+def blog_new(cid: int, title: str = Form(...), target_keyword: str = Form(""), notes: str = Form(""),
+             supports_url: str = Form(""), write_now: str = Form("")):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        b = BlogPost(client_id=c.id, source="manual", title=title.strip(), target_keyword=target_keyword.strip().lower(),
+                     angle=notes.strip(), supports_url=supports_url.strip(), priority=4)
+        db.add(b)
+        db.commit()
+        bid = b.id
+    if write_now:
+        jobs.enqueue(cid, "blog_write", post_id=bid)
+    return RedirectResponse(f"/blog/{bid}", status_code=303)
+
+
+@app.get("/blog/{bid}", response_class=HTMLResponse)
+def blog_detail(request: Request, bid: int):
+    with SessionLocal() as db:
+        b = get_or_404(db, BlogPost, bid)
+        c = b.client
+        job = next((j for j in sorted(c.jobs, key=lambda j: -j.id)
+                    if j.kind == "blog_write" and (j.params or {}).get("post_id") == b.id), None)
+        checks = blog.checklist(b, sources.domain_of(c.url)) if b.body else []
+        preview = blog.full_html(b, c.profile or {}, include_schema=False) if b.body else ""
+        faq_text = "\n\n".join(f"Q: {f['question']}\nA: {f['answer']}" for f in b.faqs or [])
+        return render(request, "blog_post.html", c=c, s=client_stats(c), tab="blog", b=b, job=job, checks=checks,
+                      preview=preview, faq_text=faq_text, stages={st: (label, cls) for st, label, cls in BLOG_STAGES},
+                      msg=request.query_params.get("msg", ""), err=request.query_params.get("err", ""))
+
+
+@app.post("/blog/{bid}/write")
+def blog_write(bid: int, feedback: str = Form("")):
+    with SessionLocal() as db:
+        b = get_or_404(db, BlogPost, bid)
+        b.feedback = feedback.strip()
+        db.commit()
+        cid = b.client_id
+    jobs.enqueue(cid, "blog_write", post_id=bid, rev=feedback.strip()[:100])
+    return RedirectResponse(f"/blog/{bid}", status_code=303)
+
+
+def _parse_faqs(text_: str) -> list[dict]:
+    faqs, q = [], None
+    for line in (text_ or "").splitlines():
+        line = line.strip()
+        if line[:2].upper() == "Q:":
+            q = line[2:].strip()
+        elif line[:2].upper() == "A:" and q:
+            faqs.append({"question": q, "answer": line[2:].strip()})
+            q = None
+        elif line and faqs and q is None:
+            faqs[-1]["answer"] += " " + line
+    return faqs
+
+
+@app.post("/blog/{bid}/save")
+def blog_save(bid: int, title: str = Form(...), meta_title: str = Form(""), meta_description: str = Form(""),
+              slug: str = Form(""), target_keyword: str = Form(""), answer_summary: str = Form(""),
+              body: str = Form(""), faqs: str = Form(""), action: str = Form("save")):
+    with SessionLocal() as db:
+        b = get_or_404(db, BlogPost, bid)
+        b.title, b.meta_title, b.meta_description = title.strip(), meta_title.strip(), meta_description.strip()
+        b.slug, b.target_keyword, b.answer_summary = jobs.slug(slug or title), target_keyword.strip().lower(), answer_summary.strip()
+        if body.strip():
+            b.body = body
+        b.faqs = _parse_faqs(faqs)
+        if action == "approve":
+            b.status = "approved"
+        b.updated_at = now()
+        db.commit()
+    return RedirectResponse(f"/blog/{bid}?msg=" + ("Approved" if action == "approve" else "Saved"), status_code=303)
+
+
+@app.post("/blog/{bid}/status")
+def blog_status(request: Request, bid: int, status: str = Form(...)):
+    if status not in ("idea", "review", "approved", "published", "rejected"):
+        raise HTTPException(400)
+    with SessionLocal() as db:
+        b = get_or_404(db, BlogPost, bid)
+        b.status, b.updated_at = status, now()
+        db.commit()
+    return back(request, f"/blog/{bid}")
+
+
+@app.post("/blog/{bid}/sync")
+def blog_sync(bid: int):
+    with SessionLocal() as db:
+        b = get_or_404(db, BlogPost, bid)
+        c = b.client
+        try:
+            b.cms_id, b.cms_edit_url = blog.wp_push(c.wp or {}, b, c.profile or {})
+        except blog.WordPressError as e:
+            return RedirectResponse(f"/blog/{bid}?err=" + quote(str(e)), status_code=303)
+        b.status, b.synced_at, b.updated_at = "synced", now(), now()
+        db.commit()
+    return RedirectResponse(f"/blog/{bid}?msg=" + quote("Sent to WordPress as a draft"), status_code=303)
+
+
+@app.get("/blog/{bid}/export.html")
+def blog_export(bid: int):
+    with SessionLocal() as db:
+        b = get_or_404(db, BlogPost, bid)
+        page = (f"<!doctype html><html><head><meta charset='utf-8'><title>{html_escape(b.meta_title or b.title)}</title>"
+                f"<meta name='description' content='{html_escape(b.meta_description)}'></head><body>"
+                f"<h1>{html_escape(b.title)}</h1>{blog.full_html(b, b.client.profile or {})}</body></html>")
+        return HTMLResponse(page, headers={"Content-Disposition": f'attachment; filename="{b.slug or "post"}.html"'})
+
+
+@app.post("/clients/{cid}/wordpress")
+def client_wordpress(cid: int, wp_url: str = Form(""), wp_user: str = Form(""), wp_app_password: str = Form(""),
+                     action: str = Form("save")):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        wp = dict(c.wp or {})
+        wp["url"], wp["user"] = wp_url.strip(), wp_user.strip()
+        if wp_app_password.strip():
+            wp["app_password"] = wp_app_password.strip()
+        if action == "disconnect":
+            wp = {}
+        c.wp = wp
+        db.commit()
+        msg = "WordPress settings saved"
+        if action == "test" and wp:
+            try:
+                msg = blog.wp_test(wp)
+            except blog.WordPressError as e:
+                return RedirectResponse(f"/clients/{cid}/settings?wp_err=" + quote(str(e)) + "#wordpress", status_code=303)
+    return RedirectResponse(f"/clients/{cid}/settings?wp_msg=" + quote(msg) + "#wordpress", status_code=303)
 
 
 GBP_FIELDS = [

@@ -41,6 +41,7 @@ class Client(Base):
     # Google Business Profile facts entered by hand until API access is approved.
     gbp: Mapped[dict] = mapped_column(JSON, default=dict)
     gsc_cache: Mapped[dict] = mapped_column(JSON, default=dict)  # {fetched, rows}
+    wp: Mapped[dict] = mapped_column(JSON, default=dict)  # WordPress connection {url, user, app_password}
     audit_interval_days: Mapped[int] = mapped_column(Integer, default=7)
     rank_interval_days: Mapped[int] = mapped_column(Integer, default=7)
     last_audit_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
@@ -54,6 +55,7 @@ class Client(Base):
     posts: Mapped[list["GbpPost"]] = relationship(back_populates="client", cascade="all, delete-orphan")
     jobs: Mapped[list["Job"]] = relationship(back_populates="client", cascade="all, delete-orphan")
     alerts: Mapped[list["Alert"]] = relationship(back_populates="client", cascade="all, delete-orphan")
+    blog_posts: Mapped[list["BlogPost"]] = relationship(back_populates="client", cascade="all, delete-orphan")
 
 
 class Page(Base):
@@ -172,6 +174,45 @@ class GbpPost(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
 
     client: Mapped[Client] = relationship(back_populates="posts")
+
+
+class BlogPost(Base):
+    """A blog post moving from idea -> writing -> review -> approved -> synced (CMS draft) -> published."""
+    __tablename__ = "blog_posts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), index=True)
+    source: Mapped[str] = mapped_column(String(20), default="ai")  # ai | manual
+    # idea | writing | review | approved | synced | published | rejected
+    status: Mapped[str] = mapped_column(String(20), default="idea")
+    title: Mapped[str] = mapped_column(String(300))
+    target_keyword: Mapped[str] = mapped_column(String(300), default="")
+    secondary_keywords: Mapped[list] = mapped_column(JSON, default=list)
+    search_intent: Mapped[str] = mapped_column(String(50), default="")
+    angle: Mapped[str] = mapped_column(Text, default="")  # idea rationale or the owner's notes
+    outline: Mapped[str] = mapped_column(Text, default="")
+    supports_url: Mapped[str] = mapped_column(String(1000), default="")  # money page it should link to
+    priority: Mapped[int] = mapped_column(Integer, default=3)
+    search_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Written article
+    meta_title: Mapped[str] = mapped_column(String(300), default="")
+    meta_description: Mapped[str] = mapped_column(String(500), default="")
+    slug: Mapped[str] = mapped_column(String(300), default="")
+    excerpt: Mapped[str] = mapped_column(Text, default="")
+    answer_summary: Mapped[str] = mapped_column(Text, default="")
+    key_takeaways: Mapped[list] = mapped_column(JSON, default=list)
+    body: Mapped[str] = mapped_column(Text, default="")  # markdown with [[visual:N]] markers
+    faqs: Mapped[list] = mapped_column(JSON, default=list)  # [{question, answer}]
+    visuals: Mapped[list] = mapped_column(JSON, default=list)
+    references: Mapped[list] = mapped_column(JSON, default=list)
+    feedback: Mapped[str] = mapped_column(Text, default="")
+    # CMS sync
+    cms_id: Mapped[str] = mapped_column(String(50), default="")
+    cms_edit_url: Mapped[str] = mapped_column(String(1000), default="")
+    synced_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
+
+    client: Mapped[Client] = relationship(back_populates="blog_posts")
 
 
 class Alert(Base):

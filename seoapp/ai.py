@@ -322,6 +322,136 @@ EXISTING BLOG POSTS: {_j(blog_titles[:150])}"""
     return [r.model_dump() for r in _parse(RecList, prompt).recommendations]
 
 
+class BlogIdea(BaseModel):
+    title: str
+    target_keyword: str
+    secondary_keywords: list[str]
+    search_intent: str  # informational | commercial | comparison | local
+    angle: str  # why this post, what makes it better than what ranks now
+    outline: str  # markdown H2/H3 outline
+    supports_url: str  # the service page this post should send readers and links to
+    priority: int  # 1-5
+
+
+class BlogPlan(BaseModel):
+    ideas: list[BlogIdea]
+
+
+def blog_plan(profile: dict, keywords: list[dict], existing_titles: list[str], questions: list[str], n: int = 6) -> list[dict]:
+    prompt = f"""Plan {n} blog posts that will rank on Google and get cited by AI assistants (ChatGPT, \
+Gemini, Claude, Google AI Overviews), bringing local people who are researching treatments to the \
+business and pushing authority to the money pages.
+
+Choose topics from real pre-booking questions: cost in [city], how long results last, X vs Y, \
+recovery and downtime, what to expect, who it's for, safety, seasonal timing, myths. Each post targets \
+one keyword that a blog can realistically win (usually a question or comparison, not the service + \
+city keyword that the service page targets). Prefer topics that support the highest-priority target \
+keywords. Never duplicate an existing post. priority 5 = most valuable.
+
+supports_url: the existing service page this post should link to (from the target keywords' pages).
+
+BUSINESS: {_j(profile)}
+
+TARGET KEYWORDS AND THEIR PAGES: {_j(keywords[:60])}
+
+QUESTIONS PEOPLE ALREADY SEARCH (Search Console): {_j(questions[:40])}
+
+EXISTING POSTS AND IDEAS: {_j(existing_titles[:200])}"""
+    return [i.model_dump() for i in _parse(BlogPlan, prompt, effort="high").ideas]
+
+
+class Faq(BaseModel):
+    question: str
+    answer: str
+
+
+class Visual(BaseModel):
+    kind: str  # table | bar_chart | photo
+    title: str
+    caption: str
+    columns: list[str]  # table: header cells
+    rows: list[list[str]]  # table: body rows
+    labels: list[str]  # bar_chart: bar labels
+    values: list[float]  # bar_chart: bar values
+    unit: str  # bar_chart: unit shown after values, e.g. "months"
+    photo_brief: str  # photo: what to shoot or choose
+    alt_text: str
+
+
+class BlogArticle(BaseModel):
+    title: str
+    meta_title: str
+    meta_description: str
+    slug: str
+    excerpt: str
+    answer_summary: str
+    key_takeaways: list[str]
+    body_markdown: str
+    faqs: list[Faq]
+    visuals: list[Visual]
+    references: list[str]
+
+
+BLOG_RULES = """Write a blog post built to rank #1 on Google and to be quoted by AI assistants.
+
+STRUCTURE (SEO + AEO + GEO):
+- title: the H1, contains the target keyword naturally, compelling, under 65 characters.
+- meta_title: 50-60 characters, keyword first, ends with " | " + business name if it fits.
+- meta_description: 140-155 characters with the keyword, a benefit and a reason to click.
+- slug: short, lowercase, hyphenated, keyword-based.
+- answer_summary: a 40-60 word direct answer to the main question, written so it can be quoted alone.
+- key_takeaways: 3-5 one-sentence takeaways.
+- body_markdown: 1,200-2,000 words. Use ## and ### headings phrased the way people ask questions. \
+Start each section with a 1-2 sentence direct answer, then detail. Short paragraphs (2-4 sentences), \
+bullet lists and numbered steps where they help scanning. Include specific, verifiable facts (typical \
+ranges, timelines, how a treatment works) and attribute them to the kind of source they come from \
+(e.g. "according to the FDA label", "the American Society of Plastic Surgeons reports"). Mention the \
+city and nearby areas naturally where relevant. Link to the supporting service page at least twice and \
+to 1-3 other relevant site pages using markdown links with descriptive anchor text (only URLs from the \
+site page list). End with a short section that invites a consultation (clear call to action). Do not \
+include the H1, the FAQ or the takeaways in body_markdown; they are added separately.
+- faqs: 4-6 questions people also ask, each answered in 2-4 sentences.
+- visuals: 2-4 visuals, only where they genuinely help: a comparison "table" (columns + rows) for \
+X vs Y, costs, timelines or options; a "bar_chart" (labels + values + unit) for numeric comparisons such \
+as how long results last; a "photo" for an image the owner should add (photo_brief says exactly what to \
+show; never before/after unless patient-consented). Every visual needs a caption and alt_text. Leave \
+fields that don't apply to a visual's kind empty. Place each visual in body_markdown on its own line \
+as [[visual:1]], [[visual:2]] ... in the order of the visuals list.
+- references: names of the authoritative organizations or documents relied on (no URLs).
+
+Write in the business's voice for real patients at an 8th-grade reading level. Use [brackets] for \
+facts you don't have (prices, provider names, years of experience) instead of inventing them."""
+
+
+def write_blog(profile: dict, post: dict, site_pages: list[str], competitors: list[dict]) -> dict:
+    prompt = f"""{BLOG_RULES}
+
+BUSINESS: {_j(profile)}
+
+POST TO WRITE: {_j(post)}
+
+PAGES THAT CURRENTLY RANK FOR THE TARGET KEYWORD (beat them: cover what they cover, better and more \
+specifically, plus what they miss): {_j(competitors)}
+
+SITE PAGES (for internal links): {_j(site_pages[:150])}"""
+    with client().beta.messages.stream(
+        model=config.CLAUDE_MODEL,
+        max_tokens=64000,
+        system=SYSTEM,
+        messages=[{"role": "user", "content": prompt}],
+        output_format=BlogArticle,
+        output_config={"effort": "high"},
+        betas=["server-side-fallback-2026-07-01"],
+        fallbacks="default",
+    ) as stream:
+        msg = stream.get_final_message()
+    if msg.stop_reason == "refusal":
+        raise RuntimeError("Claude declined this request")
+    if msg.parsed_output is None:
+        raise RuntimeError(f"Claude returned no article (stop_reason={msg.stop_reason})")
+    return msg.parsed_output.model_dump()
+
+
 def gbp_audit(profile: dict, gbp: dict, keywords: list[dict], maps_competitors: list) -> list[dict]:
     prompt = f"""Audit this Google Business Profile for Maps / local pack rankings and give 5-10 \
 recommendations (category "gbp"), highest impact first. Cover: primary and secondary categories (name \
