@@ -87,6 +87,36 @@ def _dfs(path: str, payload: list) -> list:
     return out
 
 
+def dfs_test() -> tuple[bool, str]:
+    """Free account check: (ok, plain-English message)."""
+    login, pw = config.DATAFORSEO_LOGIN.strip(), config.DATAFORSEO_PASSWORD.strip()
+    if not login and not pw:
+        return False, ("Neither DATAFORSEO_LOGIN nor DATAFORSEO_PASSWORD is set. In Render → your service → "
+                       "Environment, add both (names exactly as written, all capitals), then Save.")
+    if not login or not pw:
+        missing = "DATAFORSEO_LOGIN" if not login else "DATAFORSEO_PASSWORD"
+        return False, f"{missing} is missing or empty in Render → Environment. Check the name is spelled exactly like that."
+    try:
+        r = requests.get("https://api.dataforseo.com/v3/appendix/user_data", auth=(login, pw), timeout=30)
+    except requests.RequestException as e:
+        return False, f"Could not reach DataForSEO: {e}"
+    try:
+        data = r.json()
+    except ValueError:
+        data = {}
+    problem = _account_problem(data.get("status_code") or r.status_code, data.get("status_message") or r.text[:200])
+    if problem:
+        return False, problem
+    try:
+        info = data["tasks"][0]["result"][0]
+    except (KeyError, IndexError, TypeError):
+        return False, f"Unexpected answer from DataForSEO (status {r.status_code}): {str(data)[:300]}"
+    balance = (info.get("money") or {}).get("balance")
+    if balance is not None and balance <= 0:
+        return False, f"Logged in as {info.get('login')}, but the balance is ${balance}. Add funds at dataforseo.com."
+    return True, f"Connected as {info.get('login')}. Balance: ${balance:,.2f}" if balance is not None else f"Connected as {info.get('login')}."
+
+
 def keyword_metrics(keywords: list[str]) -> dict[str, dict]:
     """{keyword: {search_volume, cpc, difficulty}} for US Google."""
     if not dfs_enabled() or not keywords:

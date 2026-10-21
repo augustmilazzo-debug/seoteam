@@ -818,4 +818,14 @@ def client_report(request: Request, cid: int):
 
 @app.get("/settings", response_class=HTMLResponse)
 def settings(request: Request):
-    return render(request, "settings.html", gsc_email=sources.gsc_service_email(), cfg=config)
+    login = config.DATAFORSEO_LOGIN.strip()
+    masked = (login[:3] + "…" + login[login.find("@"):]) if "@" in login else (login[:3] + "…" if login else "")
+    return render(request, "settings.html", gsc_email=sources.gsc_service_email(), cfg=config, dfs_login=masked,
+                  dfs_pw_len=len(config.DATAFORSEO_PASSWORD.strip()),
+                  dfs_msg=request.query_params.get("dfs_msg", ""), dfs_ok=request.query_params.get("dfs_ok") == "1")
+
+
+@app.post("/settings/test-dataforseo")
+def settings_test_dfs():
+    ok, msg = sources.dfs_test()
+    return RedirectResponse(f"/settings?dfs_ok={int(ok)}&dfs_msg=" + quote(msg) + "#dataforseo", status_code=303)

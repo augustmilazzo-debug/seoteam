@@ -42,6 +42,7 @@ class Client(Base):
     gbp: Mapped[dict] = mapped_column(JSON, default=dict)
     gsc_cache: Mapped[dict] = mapped_column(JSON, default=dict)  # {fetched, rows}
     wp: Mapped[dict] = mapped_column(JSON, default=dict)  # WordPress connection {url, user, app_password}
+    compliance_rules: Mapped[str] = mapped_column(Text, default="")  # client-specific advertising rules
     audit_interval_days: Mapped[int] = mapped_column(Integer, default=7)
     rank_interval_days: Mapped[int] = mapped_column(Integer, default=7)
     last_audit_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
@@ -151,6 +152,7 @@ class Recommendation(Base):
     location: Mapped[str] = mapped_column(String(100), default="")  # location key for GBP/local items
     draft: Mapped[str] = mapped_column(Text, default="")  # generated content (markdown)
     draft_status: Mapped[str] = mapped_column(String(20), default="")  # "" | draft | approved | rejected
+    compliance: Mapped[dict] = mapped_column(JSON, default=dict)  # {status, issues, checked_at, override}
     baseline: Mapped[dict] = mapped_column(JSON, default=dict)  # position etc. when marked done
     result: Mapped[str] = mapped_column(Text, default="")  # measured impact
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
@@ -175,6 +177,7 @@ class GbpPost(Base):
     suggested_date: Mapped[dt.date | None] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="draft")  # draft | approved | published | rejected
     location: Mapped[str] = mapped_column(String(100), default="")  # location key (see locations.py)
+    compliance: Mapped[dict] = mapped_column(JSON, default=dict)  # {status, issues, checked_at, override}
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
 
     client: Mapped[Client] = relationship(back_populates="posts")
@@ -213,6 +216,7 @@ class BlogPost(Base):
     # CMS sync
     cms_id: Mapped[str] = mapped_column(String(50), default="")
     cms_edit_url: Mapped[str] = mapped_column(String(1000), default="")
+    compliance: Mapped[dict] = mapped_column(JSON, default=dict)  # {status, issues, checked_at, override}
     synced_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
@@ -249,6 +253,27 @@ class Job(Base):
     finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
 
     client: Mapped[Client] = relationship(back_populates="jobs")
+
+
+class Setting(Base):
+    """Agency-wide settings edited in the app (e.g. the compliance checklist sign-off)."""
+    __tablename__ = "settings"
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+def get_setting(db, key: str) -> dict:
+    row = db.get(Setting, key)
+    return dict(row.value or {}) if row else {}
+
+
+def put_setting(db, key: str, value: dict) -> None:
+    row = db.get(Setting, key)
+    if row is None:
+        db.add(Setting(key=key, value=value))
+    else:
+        row.value = value
+    db.commit()
 
 
 def init_db() -> None:

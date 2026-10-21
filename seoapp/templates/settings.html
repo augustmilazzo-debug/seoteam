@@ -8,8 +8,12 @@
   <tr><th>Connection</th><th>Status</th><th>What it powers</th><th>Variable(s)</th></tr>
   <tr><td><b>Claude (Anthropic)</b></td><td>{{ '<span class="badge b-ok">Connected</span>'|safe if ints.claude else '<span class="badge b-critical">Not set</span>'|safe }}</td>
     <td class="small">Business profile, keyword strategy, page optimization, new pages, blog ideas, drafts, GBP audit and posts. Model: <code>{{ cfg.CLAUDE_MODEL }}</code></td><td class="small"><code>ANTHROPIC_API_KEY</code></td></tr>
-  <tr><td><b>DataForSEO</b></td><td>{{ '<span class="badge b-ok">Connected</span>'|safe if ints.dataforseo else '<span class="badge b-high">Not set</span>'|safe }}</td>
-    <td class="small">Google and Maps rank tracking, competitor pages, search volume and difficulty</td><td class="small"><code>DATAFORSEO_LOGIN</code>, <code>DATAFORSEO_PASSWORD</code></td></tr>
+  <tr id="dataforseo"><td><b>DataForSEO</b></td><td>{{ '<span class="badge b-brand">Keys set</span>'|safe if ints.dataforseo else '<span class="badge b-high">Not set</span>'|safe }}</td>
+    <td class="small">Google and Maps rank tracking, competitor pages, search volume and difficulty.
+      {% if dfs_login or dfs_pw_len %}<br>Login in use: <code>{{ dfs_login or '(empty)' }}</code> · password: {{ dfs_pw_len }} characters{% endif %}
+      <form method="post" action="/settings/test-dataforseo" style="margin-top: 6px;"><button class="sm primary">Test DataForSEO connection</button></form>
+      {% if dfs_msg %}<div class="notice {{ 'ok' if dfs_ok else '' }}" style="margin: 8px 0 0;">{{ '✅ ' if dfs_ok else '❌ ' }}{{ dfs_msg }}</div>{% endif %}</td>
+    <td class="small"><code>DATAFORSEO_LOGIN</code>, <code>DATAFORSEO_PASSWORD</code></td></tr>
   <tr><td><b>Google Search Console</b></td><td>{{ '<span class="badge b-ok">Connected</span>'|safe if ints.gsc else '<span class="badge b-high">Not set</span>'|safe }}</td>
     <td class="small">Real clicks, impressions and positions for every query.{% if gsc_email %}<br>Add <code>{{ gsc_email }}</code> as a user on each client's property.{% endif %}</td><td class="small"><code>GSC_SERVICE_ACCOUNT_JSON</code></td></tr>
   <tr><td><b>PageSpeed Insights</b></td><td>{{ '<span class="badge b-ok">Key set</span>'|safe if ints.pagespeed_key else '<span class="badge b-gray">Works without a key (lower limits)</span>'|safe }}</td>
