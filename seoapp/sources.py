@@ -230,7 +230,7 @@ def organic_rank(keyword: str, domain: str, location_name: str, device: str = "m
                                "ours": is_ours(d, title, domain, business_name)})
     return {"position": position, "url": url, "top": top, "local_pack": local_pack,
             "local_pack_position": next((x["rank"] for x in local_pack if x["ours"]), None),
-            "location": place, "device": device, "checked": dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+            "location": place, "device": device, "checked": dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M"),
             "se_results": result.get("se_results_count"), "check_url": result.get("check_url", "")}
 
 

@@ -170,7 +170,7 @@ def status(issues: list[dict]) -> str:
 
 def result(issues: list[dict], ai_checked: bool) -> dict:
     return {"status": status(issues), "issues": issues, "ai_checked": ai_checked,
-            "checked_at": dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M")}
+            "checked_at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M")}
 
 
 def blocking(comp: dict | None) -> bool:
