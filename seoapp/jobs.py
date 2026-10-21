@@ -791,7 +791,7 @@ def step_blog(db, c: Client, log, force=False):
             continue
         if sources.dfs_enabled():
             try:  # does Google already rank one of our pages for this search?
-                org = sources.organic_rank(kw, domain, c.rank_location)
+                org = sources.organic_rank(kw, domain, c.rank_location, c.rank_device or "mobile")
             except sources.DataForSEOAccountError:
                 raise
             except Exception:
@@ -843,7 +843,7 @@ def job_blog_write(db, c: Client, log, post_id: int, rev: str = ""):
     if sources.dfs_enabled() and b.target_keyword:
         try:
             place = locations.get(c, b.location)["rank_location"] if b.location else c.rank_location
-            org = sources.organic_rank(b.target_keyword, sources.domain_of(c.url), place)
+            org = sources.organic_rank(b.target_keyword, sources.domain_of(c.url), place, c.rank_device or "mobile")
             tmp = Keyword(keyword=b.target_keyword, competitors=org["top"])
             competitors = _competitor_summaries(tmp, sources.domain_of(c.url), log)
             log(f"Studied {len(competitors)} page(s) ranking for '{b.target_keyword}'")
@@ -934,13 +934,14 @@ def step_measure(db, c: Client, log):
 
 
 def _check(c, k, place, domain, name, local):
-    org = sources.organic_rank(k.keyword, domain, place)
+    org = sources.organic_rank(k.keyword, domain, place, c.rank_device or "mobile", name)
     maps = sources.maps_rank(k.keyword, domain, name, place) if local else None
     return org, maps
 
 
-def step_ranks(db, c: Client, log, page_url: str = ""):
-    tracked = [k for k in c.keywords if k.tracked and (not page_url or k.target_url == page_url)]
+def step_ranks(db, c: Client, log, page_url: str = "", keyword_id: int | None = None):
+    tracked = [k for k in c.keywords if (k.tracked or k.id == keyword_id)
+               and (not page_url or k.target_url == page_url) and (keyword_id is None or k.id == keyword_id)]
     if not tracked:
         log("No tracked keywords for this page yet" if page_url else "No tracked keywords yet")
         return
@@ -954,29 +955,35 @@ def step_ranks(db, c: Client, log, page_url: str = ""):
     name = (c.profile or {}).get("business_name") or c.name
     locs = locations.all_for(c)
     maps_seen: dict[str, dict[str, int]] = {l["key"]: {} for l in locs}
-    log(f"Checking {len(tracked)} keyword(s) on Google (top {sources.RANK_DEPTH}) and Maps (local keywords)"
-        + (f" across {len(locs)} locations" if len(locs) > 1 else ""))
+    log(f"Checking {len(tracked)} keyword(s) on Google ({c.rank_device or 'mobile'}, top {sources.RANK_DEPTH}) "
+        "and Maps (local keywords)" + (f" across {len(locs)} locations" if len(locs) > 1 else ""))
     alerts = failures = checked = 0
+    bad_locations: set[str] = set()
     for k in tracked:
         place, check_locs = locations.rank_location_for(c, k)
         local = is_local(k) or bool(locations.city_in_keyword(c, k))
-        per_loc, primary = {}, None
+        per_loc, primary, snapshots = {}, None, {}
         try:
             if len(check_locs) == 1 or not local:
                 org, maps = _check(c, k, place, domain, name, local)
                 primary = (org, maps)
+                snapshots[check_locs[0]["key"] if local else "main"] = (org, maps)
                 for l in (check_locs[:1] if local else []):
-                    per_loc[l["key"]] = {"position": org["position"], "maps": maps}
+                    per_loc[l["key"]] = {"position": org["position"], "maps": (maps or {}).get("position"),
+                                         "pack": org["local_pack_position"]}
             else:  # generic local keyword ("botox near me"): search from each location
                 for l in check_locs:
                     org, maps = _check(c, k, l["rank_location"], domain, name, True)
-                    per_loc[l["key"]] = {"position": org["position"], "maps": maps}
+                    per_loc[l["key"]] = {"position": org["position"], "maps": (maps or {}).get("position"),
+                                         "pack": org["local_pack_position"]}
+                    snapshots[l["key"]] = (org, maps)
                     primary = primary or (org, maps)
-                    for title, _ in org.get("local_pack", []):
-                        if name.lower() not in title.lower():
-                            maps_seen[l["key"]][title] = maps_seen[l["key"]].get(title, 0) + 1
         except sources.DataForSEOAccountError:
             raise  # login/billing problem: stop and show the reason instead of failing every keyword
+        except sources.LocationError as e:
+            bad_locations.add(str(e))
+            log(f"Not checked '{k.keyword}': {e}")
+            continue
         except Exception as e:
             log(f"Rank check failed for '{k.keyword}': {e}")
             failures += 1
@@ -985,23 +992,30 @@ def step_ranks(db, c: Client, log, page_url: str = ""):
             continue
         checked += 1
         org, maps = primary
-        alert = _record_position(k, org["position"], maps, org["url"], "dataforseo")
+        alert = _record_position(k, org["position"], (maps or {}).get("position"), org["url"], "dataforseo")
         if alert:
             db.add(alert)
             alerts += 1
         k.loc_ranks = per_loc
-        k.competitors = org["top"]
-        if len(check_locs) == 1 or not local:
-            for title, _ in org.get("local_pack", []):
-                if name.lower() not in title.lower():
-                    key = check_locs[0]["key"]
-                    maps_seen[key][title] = maps_seen[key].get(title, 0) + 1
+        k.competitors = [t for t in org["top"] if not t["ours"]][:5]
+        k.serp = {key: {"location": o["location"], "device": o["device"], "checked": o["checked"], "position": o["position"],
+                        "url": o["url"], "top": o["top"], "local_pack": o["local_pack"],
+                        "local_pack_position": o["local_pack_position"], "check_url": o["check_url"],
+                        "maps": m} for key, (o, m) in snapshots.items()}
+        for key, (o, _) in snapshots.items():
+            for x in o["local_pack"]:
+                if not x["ours"] and key in maps_seen:
+                    maps_seen[key][x["title"]] = maps_seen[key].get(x["title"], 0) + 1
         if k.role == "primary":
             k.analysis = {"checked": dt.date.today().isoformat(),
                           "competitors": _competitor_summaries(k, domain, log)}
-        where = ", ".join(f"{locations.get(c, key)['label']}: Google {v['position'] or '>' + str(sources.RANK_DEPTH)}"
-                          + (f", Maps {v['maps'] or '>20'}" if local else "") for key, v in per_loc.items())
-        log(f"'{k.keyword}': " + (where or f"Google {org['position'] or '>' + str(sources.RANK_DEPTH)}"))
+        def fmt(v):
+            s_ = f"Google {v['position'] or '>' + str(sources.RANK_DEPTH)}"
+            if local:
+                s_ += f", Map pack {v['pack'] or '-'}, Maps {v['maps'] or '>20'}"
+            return s_
+        where = "; ".join(f"{locations.get(c, key)['label']}: {fmt(v)}" for key, v in per_loc.items())
+        log(f"'{k.keyword}' from {org['location']}: " + (where or f"Google {org['position'] or '>' + str(sources.RANK_DEPTH)}"))
         db.commit()
         time.sleep(0.2)
     for l in locs:
@@ -1011,7 +1025,12 @@ def step_ranks(db, c: Client, log, page_url: str = ""):
             locations.set_gbp(c, l["key"], {**g, "_maps_competitors": sorted(seen, key=lambda t: -seen[t])[:8]})
     if alerts:
         log(f"{alerts} notable ranking change(s) recorded")
-    if not page_url:
+    if bad_locations:
+        msg = " ".join(sorted(bad_locations))
+        if hasattr(log, "warnings"):
+            log.warnings += 1
+        log(f"WARNING: some keywords were not checked because of their location. {msg}")
+    if not page_url and keyword_id is None:
         c.last_rank_at = now()
     db.commit()
 
@@ -1055,8 +1074,8 @@ def ranks_due(c: Client, slack_days: int = 0) -> bool:
     return not c.last_rank_at or now() - c.last_rank_at > dt.timedelta(days=c.rank_interval_days - slack_days)
 
 
-def job_ranks(db, c, log, page_url: str = ""):
-    step_ranks(db, c, log, page_url=page_url)
+def job_ranks(db, c, log, page_url: str = "", keyword_id: int | None = None):
+    step_ranks(db, c, log, page_url=page_url, keyword_id=keyword_id)
     safe(step_wrong_page, db, c, log)
     safe(step_measure, db, c, log)
 

@@ -323,6 +323,27 @@ def keyword_update(request: Request, kid: int, priority: int = Form(...), target
     return back(request, "/")
 
 
+@app.get("/keywords/{kid}", response_class=HTMLResponse)
+def keyword_detail(request: Request, kid: int):
+    with SessionLocal() as db:
+        k = get_or_404(db, Keyword, kid)
+        c = k.client
+        job = next((j for j in sorted(c.jobs, key=lambda j: -j.id)
+                    if j.kind == "ranks" and (j.params or {}).get("keyword_id") == k.id), None)
+        snaps = [(locations.get(c, key)["label"] if key != "main" else "", snap) for key, snap in (k.serp or {}).items()]
+        return render(request, "keyword_detail.html", c=c, s=client_stats(c), tab="keywords", k=k, snaps=snaps, job=job,
+                      dfs_ready=sources.dfs_enabled())
+
+
+@app.post("/keywords/{kid}/check")
+def keyword_check(kid: int):
+    with SessionLocal() as db:
+        k = get_or_404(db, Keyword, kid)
+        cid = k.client_id
+    jobs.enqueue(cid, "ranks", keyword_id=kid)
+    return RedirectResponse(f"/keywords/{kid}", status_code=303)
+
+
 @app.post("/clients/{cid}/keywords/bulk")
 def keywords_bulk(cid: int, action: str = Form(...), ids: list[int] = Form(default=[])):
     with SessionLocal() as db:
@@ -817,7 +838,16 @@ def client_settings(request: Request, cid: int):
                 sites = sources.gsc_sites(c)
             except sources.GSCError as e:
                 sites_err = str(e)
-        return render(request, "client_settings.html", c=c, s=client_stats(c), tab="settings",
+        loc_checks = []
+        if sources.dfs_enabled():
+            for l in locations.all_for(c):
+                try:
+                    loc_checks.append((l["label"], True, sources.resolve_location(l["rank_location"])[1]))
+                except sources.LocationError as e:
+                    loc_checks.append((l["label"], False, str(e)))
+                except Exception as e:
+                    loc_checks.append((l["label"], None, f"Couldn't check: {e}"))
+        return render(request, "client_settings.html", c=c, s=client_stats(c), tab="settings", loc_checks=loc_checks,
                       p=c.profile or {}, gsc_email=sources.gsc_service_email(), gsc_sites=sites, gsc_sites_err=sites_err,
                       oauth_ready=sources.google_oauth_ready(),
                       platform=request.query_params.get("platform") if request.query_params.get("platform") in publish.PLATFORMS
@@ -832,6 +862,7 @@ def _lines(s: str) -> list[str]:
 def client_settings_save(cid: int, name: str = Form(...), url: str = Form(...), cms: str = Form("unknown"),
                          rank_location: str = Form(""),
                          audit_interval_days: int = Form(7), rank_interval_days: int = Form(3),
+                         rank_device: str = Form("mobile"),
                          paused: str = Form(""), notes: str = Form("")):
     with SessionLocal() as db:
         c = get_client(db, cid)
@@ -839,6 +870,7 @@ def client_settings_save(cid: int, name: str = Form(...), url: str = Form(...), 
         c.rank_location = rank_location.strip()
         c.audit_interval_days = max(1, min(60, audit_interval_days))
         c.rank_interval_days = max(1, min(30, rank_interval_days))
+        c.rank_device = rank_device if rank_device in ("mobile", "desktop") else "mobile"
         c.paused, c.notes = paused == "on", notes
         db.commit()
     return RedirectResponse(f"/clients/{cid}/settings?saved=1", status_code=303)

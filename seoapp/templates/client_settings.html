@@ -43,6 +43,10 @@
       <label>Rank-check location</label>
       <input type="text" name="rank_location" value="{{ c.rank_location }}" placeholder="Newport Beach,California,United States">
       <p class="small muted">Rankings are checked as if searching from this city. Format: City,State,United States.</p>
+      {% for label, ok, info in loc_checks %}<p class="small" style="margin: 2px 0;">{{ '✅' if ok else '❌' if ok == false else '⚠️' }} {{ label }}: {{ info }}</p>{% endfor %}
+      <label>Check rankings as seen on</label>
+      <select name="rank_device">{% for d in ['mobile', 'desktop'] %}<option value="{{ d }}" {{ 'selected' if (c.rank_device or 'mobile') == d }}>{{ d|capitalize }}</option>{% endfor %}</select>
+      <p class="small muted">Most local medspa searches happen on phones. Desktop results can differ by a few positions.</p>
       <div class="row">
         <div class="grow"><label>Re-audit every (days)</label><input type="number" name="audit_interval_days" min="1" max="60" value="{{ c.audit_interval_days }}"></div>
         <div class="grow"><label>Check rankings every (days)</label><input type="number" name="rank_interval_days" min="1" max="30" value="{{ c.rank_interval_days }}"></div>

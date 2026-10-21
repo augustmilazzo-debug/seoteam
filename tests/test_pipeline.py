@@ -427,6 +427,9 @@ def test_dataforseo_errors_are_explained(monkeypatch):
 
     monkeypatch.setattr(config, "DATAFORSEO_LOGIN", "me@x.com")
     monkeypatch.setattr(config, "DATAFORSEO_PASSWORD", "pw")
+    monkeypatch.setattr(sources, "_LOCATIONS", [{"code": 1013962, "name": "Newport Beach,California,United States", "type": "City"},
+                                                 {"code": 1014044, "name": "Pasadena,California,United States", "type": "City"},
+                                                 {"code": 9999, "name": "Pasadena,Texas,United States", "type": "City"}])
     # wrong API password: DataForSEO answers HTTP 401 with status 40100
     monkeypatch.setattr(sources.requests, "post", lambda *a, **k: Resp(401, {"status_code": 40100, "status_message": "You are not authorized"}))
     with pytest.raises(sources.DataForSEOAccountError, match="API password"):
@@ -436,18 +439,13 @@ def test_dataforseo_errors_are_explained(monkeypatch):
         {"status_code": 40200, "status_message": "Payment Required."}]}))
     with pytest.raises(sources.DataForSEOAccountError, match="no funds"):
         sources.maps_rank("botox", "x.com", "X", "")
-    # unknown location falls back to the US instead of failing
-    calls = []
-
-    def post(url, json, **k):
-        calls.append(json[0])
-        if "location_name" in json[0]:
-            return Resp(200, {"status_code": 20000, "tasks": [{"status_code": 40501, "status_message": "Invalid Field: 'location_name'."}]})
-        return Resp(200, {"status_code": 20000, "tasks": [{"status_code": 20000, "result": [{"items": [
-            {"type": "organic", "rank_group": 4, "domain": "www.x.com", "url": "https://x.com/botox/", "title": "t"}]}]}]})
-    monkeypatch.setattr(sources.requests, "post", post)
-    res = sources.organic_rank("botox", "x.com", "Nowhere,Nope,United States")
-    assert res["position"] == 4 and calls[-1]["location_code"] == sources.US
+    # an unknown location is reported, never silently searched nationwide
+    monkeypatch.setattr(sources.requests, "post", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not search")))
+    with pytest.raises(sources.LocationError, match="doesn't recognize"):
+        sources.organic_rank("botox", "x.com", "Nowhere,Nope,United States")
+    # spacing and state are handled
+    assert sources.resolve_location("Pasadena, California, United States") == (1014044, "Pasadena,California,United States")
+    assert sources.resolve_location("Pasadena,California")[0] == 1014044  # picks California, not Texas
 
 
 def test_search_console_connect_and_insights(monkeypatch):
@@ -653,3 +651,70 @@ def test_publish_to_other_platforms(monkeypatch):
                                                  "app_password": "app pass", "action": "save"})
     with SessionLocal() as db:
         assert db.get(BlogPost, bid).status == "published"
+
+
+def test_rank_check_reads_map_pack_and_exact_location(monkeypatch):
+    from seoapp import locations, sources
+    from seoapp.db import Keyword
+
+    monkeypatch.setattr(config, "DATAFORSEO_LOGIN", "me@x.com")
+    monkeypatch.setattr(config, "DATAFORSEO_PASSWORD", "pw")
+    monkeypatch.setattr(sources, "_LOCATIONS", [{"code": 1013962, "name": "Newport Beach,California,United States", "type": "City"},
+                                                 {"code": 1014044, "name": "Pasadena,California,United States", "type": "City"}])
+    sent = []
+
+    class Resp:
+        status_code, content = 200, b"x"
+
+        def __init__(self, body):
+            self._b = body
+            self.text = str(body)
+
+        def json(self):
+            return self._b
+
+    def post(url, json, **kw):
+        sent.append((url, json[0]))
+        if "maps" in url:
+            return Resp({"status_code": 20000, "tasks": [{"status_code": 20000, "result": [{"items": [
+                {"rank_group": 1, "title": "Akari MedSpa - Pasadena", "domain": "akarimedspa.com", "rating": {"value": 4.9, "votes_count": 88}},
+                {"rank_group": 2, "title": "Other Spa", "domain": "other.com"}]}]}]})
+        return Resp({"status_code": 20000, "tasks": [{"status_code": 20000, "result": [{"check_url": "https://google.com/search?q=x", "items": [
+            {"type": "local_pack", "title": "Akari Med Spa", "domain": ""},
+            {"type": "local_pack", "title": "Glow Aesthetics", "domain": "glow.com"},
+            {"type": "organic", "rank_group": 1, "domain": "realself.com", "url": "https://realself.com/a", "title": "a"},
+            {"type": "organic", "rank_group": 2, "domain": "www.akarimedspa.com", "url": "https://www.akarimedspa.com/bbl/", "title": "b"}]}]}]})
+    monkeypatch.setattr(sources.requests, "post", post)
+
+    res = sources.organic_rank("non surgical bbl pasadena", "akarimedspa.com", "Pasadena,California,United States", "mobile", "Akari MedSpa")
+    assert res["position"] == 2 and res["local_pack_position"] == 1 and res["location"] == "Pasadena,California,United States"
+    assert sent[-1][1]["location_code"] == 1014044 and "location_name" not in sent[-1][1]
+    assert sources.maps_rank("x", "akarimedspa.com", "Akari MedSpa", "Pasadena,California,United States")["position"] == 1
+
+    with SessionLocal() as db:
+        c = Client(name="Akari", url="https://akarimedspa.com/", rank_device="desktop", profile={"business_name": "Akari MedSpa", "locations": [
+            {"name": "Newport Beach", "city": "Newport Beach", "dataforseo_location": "Newport Beach,California,United States", "service_areas": []},
+            {"name": "Pasadena", "city": "Pasadena", "dataforseo_location": "Pasadena,California,United States", "service_areas": []}]})
+        db.add(c)
+        db.commit()
+        k1 = Keyword(client_id=c.id, keyword="non surgical bbl newport", tracked=True, priority=5)
+        k2 = Keyword(client_id=c.id, keyword="non surgical bbl pasadena", tracked=True, priority=5)
+        db.add_all([k1, k2])
+        db.commit()
+        # "newport" means Newport Beach
+        assert locations.rank_location_for(c, k1)[0] == "Newport Beach,California,United States"
+        jobs.step_ranks(db, c, print)
+        db.refresh(k1)
+        db.refresh(k2)
+        assert k2.position == 2 and k2.serp["pasadena"]["local_pack_position"] == 1
+        assert k2.loc_ranks["pasadena"] == {"position": 2, "maps": 1, "pack": 1}
+        searched = {j["keyword"]: (j["location_code"], j["device"]) for u, j in sent if "organic" in u}
+        assert searched["non surgical bbl newport"] == (1013962, "desktop")
+        assert searched["non surgical bbl pasadena"] == (1014044, "desktop")
+        kid = k2.id
+
+    from fastapi.testclient import TestClient
+    from seoapp.main import app
+    with TestClient(app) as tc:
+        page = tc.get(f"/keywords/{kid}").text
+        assert "searched from Pasadena,California,United States" in page and "← you" in page and "Desktop" in page

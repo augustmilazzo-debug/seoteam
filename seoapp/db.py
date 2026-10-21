@@ -46,6 +46,7 @@ class Client(Base):
     compliance_rules: Mapped[str] = mapped_column(Text, default="")  # client-specific advertising rules
     audit_interval_days: Mapped[int] = mapped_column(Integer, default=7)
     rank_interval_days: Mapped[int] = mapped_column(Integer, default=7)
+    rank_device: Mapped[str] = mapped_column(String(10), default="mobile")  # mobile | desktop
     last_audit_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     last_rank_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     paused: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -124,6 +125,7 @@ class Keyword(Base):
     # Positions per client location for keywords without a city ("botox near me"): {loc_key: {position, maps}}
     loc_ranks: Mapped[dict] = mapped_column(JSON, default=dict)
     competitors: Mapped[list] = mapped_column(JSON, default=list)  # top results from last SERP check
+    serp: Mapped[dict] = mapped_column(JSON, default=dict)  # last check: where/how it searched and what Google showed
     analysis: Mapped[dict] = mapped_column(JSON, default=dict)  # top-3 competitor page comparison
     history: Mapped[list] = mapped_column(JSON, default=list)  # [{date, position, local, source}]
     last_checked: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)

@@ -5,6 +5,7 @@ when its credentials are missing, so the rest of the system keeps working."""
 import base64
 import datetime as dt
 import json
+import re
 from urllib.parse import urlparse
 
 import requests
@@ -139,51 +140,116 @@ def keyword_metrics(keywords: list[str]) -> dict[str, dict]:
     return out
 
 
-def _loc(location_name: str) -> dict:
-    return {"location_name": location_name} if location_name else {"location_code": US}
+class LocationError(RuntimeError):
+    """A rank-check location DataForSEO doesn't recognize. Never silently searched nationwide instead."""
 
 
-def organic_rank(keyword: str, domain: str, location_name: str) -> dict:
-    """Position of `domain` in Google mobile results, plus the top competitors."""
-    task = {"keyword": keyword, "language_code": "en", "device": "mobile", "depth": RANK_DEPTH, **_loc(location_name)}
+_LOCATIONS: list[dict] | None = None
+
+
+def _locations() -> list[dict]:
+    """DataForSEO's US Google locations (free endpoint), cached on disk."""
+    global _LOCATIONS
+    if _LOCATIONS is not None:
+        return _LOCATIONS
+    cache = config.DATA_DIR / "dataforseo_locations_us.json"
+    if cache.exists() and cache.stat().st_size > 1000:
+        _LOCATIONS = json.loads(cache.read_text())
+        return _LOCATIONS
     try:
-        res = _dfs("serp/google/organic/live/advanced", [task])
-    except DataForSEOAccountError:
-        raise
-    except RuntimeError:  # usually an unrecognized location name: fall back to the whole US
-        task.pop("location_name", None)
-        task["location_code"] = US
-        res = _dfs("serp/google/organic/live/advanced", [task])
-    items = (res[0][0].get("items") if res and res[0] else None) or []
+        r = requests.get("https://api.dataforseo.com/v3/serp/google/locations/us",
+                         auth=(config.DATAFORSEO_LOGIN, config.DATAFORSEO_PASSWORD), timeout=120)
+    except requests.RequestException as e:
+        raise RuntimeError(f"Could not load DataForSEO's location list: {e}") from e
+    data = r.json() if r.content else {}
+    problem = _account_problem(data.get("status_code") or r.status_code, data.get("status_message", ""))
+    if problem:
+        raise DataForSEOAccountError(problem)
+    rows = ((data.get("tasks") or [{}])[0].get("result")) or []
+    _LOCATIONS = [{"code": x["location_code"], "name": x["location_name"], "type": x.get("location_type", "")} for x in rows]
+    if _LOCATIONS:
+        cache.write_text(json.dumps(_LOCATIONS))
+    return _LOCATIONS
+
+
+def resolve_location(name: str) -> tuple[int, str]:
+    """(location_code, official name) for 'City,State,United States' style names, tolerant of spacing.
+    An empty name means the whole US."""
+    if not (name or "").strip():
+        return US, "United States"
+    parts = [p.strip() for p in name.split(",") if p.strip()]
+    want = ",".join(parts).lower()
+    locs = _locations()
+    for x in locs:
+        if x["name"].lower() == want:
+            return x["code"], x["name"]
+    city = parts[0].lower()
+    state = parts[1].lower() if len(parts) > 1 else ""
+    cands = [x for x in locs if x["name"].lower().startswith(city + ",") and (not state or f",{state}," in x["name"].lower())]
+    cands.sort(key=lambda x: (x["type"] != "City", len(x["name"])))
+    if cands:
+        return cands[0]["code"], cands[0]["name"]
+    raise LocationError(f"DataForSEO doesn't recognize the location “{name}”. In client Settings, use the form "
+                        f"City,State,United States (e.g. Newport Beach,California,United States).")
+
+
+def _norm_words(s: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", (s or "").lower())) - {"med", "medspa", "spa", "medical", "the", "and", "clinic",
+                                                               "aesthetics", "llc", "inc"}
+
+
+def is_ours(domain: str, title: str, own_domain: str, business_name: str) -> bool:
+    d = (domain or "").lower().removeprefix("www.")
+    if d and (d == own_domain or d.endswith("." + own_domain)):
+        return True
+    name = _norm_words(business_name)
+    return bool(name) and name <= _norm_words(title)
+
+
+def organic_rank(keyword: str, domain: str, location_name: str, device: str = "mobile", business_name: str = "") -> dict:
+    """One Google search as a person in `location_name` would see it: our organic position, our Map pack
+    (local pack) position, and a snapshot of the results for verification."""
+    code, place = resolve_location(location_name)
+    task = {"keyword": keyword, "language_code": "en", "device": device, "depth": RANK_DEPTH, "location_code": code}
+    res = _dfs("serp/google/organic/live/advanced", [task])
+    result = (res[0][0] if res and res[0] else None) or {}
+    items = result.get("items") or []
     position, url, top, local_pack = None, "", [], []
     for it in items:
         if it.get("type") == "organic":
             d = (it.get("domain") or "").removeprefix("www.")
-            if len(top) < 5:
-                top.append({"rank": it.get("rank_group"), "domain": d, "url": it.get("url"), "title": it.get("title")})
-            if position is None and (d == domain or d.endswith("." + domain)):
+            ours = d == domain or d.endswith("." + domain)
+            if len(top) < 10:
+                top.append({"rank": it.get("rank_group"), "domain": d, "url": it.get("url"), "title": it.get("title"), "ours": ours})
+            if position is None and ours:
                 position, url = it.get("rank_group"), it.get("url", "")
         elif it.get("type") == "local_pack":
-            local_pack.append((it.get("title") or "", (it.get("domain") or "").removeprefix("www.")))
-    return {"position": position, "url": url, "top": top, "local_pack": local_pack}
+            title = it.get("title") or ""
+            d = (it.get("domain") or "").removeprefix("www.")
+            local_pack.append({"rank": len(local_pack) + 1, "title": title, "domain": d,
+                               "ours": is_ours(d, title, domain, business_name)})
+    return {"position": position, "url": url, "top": top, "local_pack": local_pack,
+            "local_pack_position": next((x["rank"] for x in local_pack if x["ours"]), None),
+            "location": place, "device": device, "checked": dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+            "se_results": result.get("se_results_count"), "check_url": result.get("check_url", "")}
 
 
-def maps_rank(keyword: str, domain: str, business_name: str, location_name: str) -> int | None:
-    task = {"keyword": keyword, "language_code": "en", "depth": 20, **_loc(location_name)}
-    try:
-        res = _dfs("serp/google/maps/live/advanced", [task])
-    except DataForSEOAccountError:
-        raise
-    except RuntimeError:
-        return None
-    items = (res[0][0].get("items") if res and res[0] else None) or []
-    name = business_name.lower().strip()
+def maps_rank(keyword: str, domain: str, business_name: str, location_name: str) -> dict:
+    """Position in Google Maps results (top 20) and the businesses shown."""
+    code, place = resolve_location(location_name)
+    task = {"keyword": keyword, "language_code": "en", "depth": 20, "location_code": code}
+    res = _dfs("serp/google/maps/live/advanced", [task])
+    items = ((res[0][0] if res and res[0] else None) or {}).get("items") or []
+    pos, listing = None, []
     for it in items:
-        d = (it.get("domain") or "").removeprefix("www.")
-        title = (it.get("title") or "").lower()
-        if (d and (d == domain or d.endswith("." + domain))) or (name and name in title):
-            return it.get("rank_group")
-    return None
+        title = it.get("title") or ""
+        ours = is_ours(it.get("domain"), title, domain, business_name)
+        if len(listing) < 10:
+            listing.append({"rank": it.get("rank_group"), "title": title, "rating": (it.get("rating") or {}).get("value"),
+                            "reviews": (it.get("rating") or {}).get("votes_count"), "ours": ours})
+        if pos is None and ours:
+            pos = it.get("rank_group")
+    return {"position": pos, "listing": listing, "location": place}
 
 
 # -- Google Search Console ----------------------------------------------------

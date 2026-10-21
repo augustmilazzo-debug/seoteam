@@ -1,0 +1,62 @@
+{% extends "client_base.html" %}
+{% from "macros.html" import position, spark %}
+{% block client %}
+<p class="small"><a href="/clients/{{ c.id }}/keywords">← Keywords</a></p>
+<div class="row">
+  <div class="grow">
+    <h2 style="margin: 0;">“{{ k.keyword }}”</h2>
+    <div class="small muted">{% if k.target_url %}Page meant to rank: <a href="{{ k.target_url }}" target="_blank" rel="noopener">{{ k.target_url.split('//', 1)[-1] }}</a>{% endif %}</div>
+  </div>
+  {% if dfs_ready %}<form class="inline" method="post" action="/keywords/{{ k.id }}/check"><button class="primary">Check this keyword now</button></form>{% endif %}
+</div>
+{% if job and job.status in ('queued', 'running') %}
+<div class="notice info" style="margin-top: 12px;">Searching Google now (under a minute). This page refreshes on its own.</div>
+<meta http-equiv="refresh" content="5">
+{% elif job and job.status in ('failed', 'warning') %}
+<div class="notice" style="margin-top: 12px;">{{ job|job_error or 'The last check had a problem.' }} <a href="/jobs/{{ job.id }}">Log</a></div>
+{% endif %}
+
+<p class="small muted" style="margin-top: 14px;">This is exactly what the last check saw: a clean Google search from the location below, not personalized. Your own searches can rank the site higher because Google knows you visit it and where you are.</p>
+
+{% for label, snap in snaps %}
+<div class="panel" style="margin-top: 14px;">
+  <div class="row">
+    <h3 class="grow" style="margin: 0;">{% if label %}{{ label }} · {% endif %}searched from {{ snap.location }}</h3>
+    <span class="small muted">{{ snap.device|capitalize }} · {{ snap.checked }} UTC</span>
+  </div>
+  <div class="grid stats" style="margin: 12px 0;">
+    <div class="stat"><div class="v">{{ ('#' ~ snap.position) if snap.position else 'Not in top ' ~ RANK_DEPTH }}</div><div class="l">Google results (organic)</div></div>
+    <div class="stat"><div class="v">{{ ('#' ~ snap.local_pack_position) if snap.local_pack_position else ('Not shown' if snap.local_pack else 'No map pack') }}</div><div class="l">Map pack in the results</div></div>
+    <div class="stat"><div class="v">{{ ('#' ~ snap.maps.position) if snap.maps and snap.maps.position else ('Not in top 20' if snap.maps else '–') }}</div><div class="l">Google Maps</div></div>
+  </div>
+  <div class="grid two">
+    <div>
+      <h3 style="margin-top: 0;">Map pack</h3>
+      {% if snap.local_pack %}<table>{% for x in snap.local_pack %}<tr style="{{ 'background: var(--ok-soft); font-weight: 600;' if x.ours }}"><td>#{{ x.rank }}</td><td>{{ x.title }}{% if x.ours %} ← you{% endif %}</td></tr>{% endfor %}</table>
+      {% else %}<p class="small muted">Google showed no map pack for this search.</p>{% endif %}
+      {% if snap.maps and snap.maps.listing %}
+      <h3>Google Maps (top 10)</h3>
+      <table>{% for x in snap.maps.listing %}<tr style="{{ 'background: var(--ok-soft); font-weight: 600;' if x.ours }}"><td>#{{ x.rank }}</td><td>{{ x.title }}{% if x.ours %} ← you{% endif %}</td><td class="small muted nowrap">{% if x.rating %}{{ x.rating }}★ ({{ x.reviews }}){% endif %}</td></tr>{% endfor %}</table>
+      {% endif %}
+    </div>
+    <div>
+      <h3 style="margin-top: 0;">Google results (top 10)</h3>
+      <table>{% for x in snap.top %}<tr style="{{ 'background: var(--ok-soft); font-weight: 600;' if x.ours }}"><td>#{{ x.rank }}</td>
+        <td class="small" style="overflow-wrap: anywhere;"><a href="{{ x.url }}" target="_blank" rel="noopener">{{ x.domain }}</a>{% if x.ours %} ← you{% endif %}<div class="muted">{{ x.title }}</div></td></tr>
+      {% else %}<tr><td class="muted">No results recorded.</td></tr>{% endfor %}</table>
+      {% if snap.position and snap.position > 10 %}<p class="small">You: <b>#{{ snap.position }}</b> with <a href="{{ snap.url }}" target="_blank" rel="noopener">{{ snap.url.split('//', 1)[-1] }}</a></p>{% endif %}
+      {% if snap.check_url %}<p class="small"><a href="{{ snap.check_url }}" target="_blank" rel="noopener">Open this exact search on Google →</a></p>{% endif %}
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="panel empty" style="margin-top: 14px;">No detailed check recorded yet. Click <b>Check this keyword now</b>.</div>
+{% endfor %}
+
+<h3>History</h3>
+<div class="table-wrap"><table>
+  <tr><th>Date</th><th>Google</th><th>Maps</th><th>Source</th></tr>
+  {% for h in (k.history or [])|reverse %}<tr><td>{{ h.date }}</td><td>{{ h.position or '–' }}</td><td>{{ h.local or '–' }}</td><td class="small muted">{{ h.source }}</td></tr>
+  {% else %}<tr><td colspan="4" class="muted">No checks yet.</td></tr>{% endfor %}
+</table></div>
+{% endblock %}

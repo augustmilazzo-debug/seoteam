@@ -75,20 +75,29 @@ def for_keyword(c, k) -> list[dict]:
     """Locations a keyword belongs to: the one whose city or service area it names, else all of them."""
     locs = all_for(c)
     text = " " + _norm(k.keyword + " " + (k.location or "")) + " "
-    hits = [l for l in locs if any(f" {_norm(a)} " in text for a in [l.get("city"), l.get("name")] + l["service_areas"] if a)]
+    hits = [l for l in locs if any(f" {n} " in text for a in [l.get("city"), l.get("name")] + l["service_areas"] if a
+                                   for n in _names(a))]
     return hits or locs
 
 
+def _names(place: str) -> list[str]:
+    """Ways people type a place: 'Newport Beach' is also searched as 'newport'."""
+    n = _norm(place)
+    out = [n] if n else []
+    first = n.split(" ")[0] if " " in n else ""
+    if len(first) >= 5 and first not in ("north", "south", "east", "west", "saint", "santa", "mount", "point"):
+        out.append(first)
+    return out
+
+
 def city_in_keyword(c, k) -> str:
-    """The city a keyword names (its own location field, or a known city/service area in its text)."""
-    if k.location:
-        return k.location
+    """The city a keyword names (in its text first, else its location field)."""
     text = " " + _norm(k.keyword) + " "
     for l in all_for(c):
         for a in [l.get("city")] + l["service_areas"]:
-            if a and f" {_norm(a)} " in text:
+            if a and any(f" {n} " in text for n in _names(a)):
                 return a
-    return ""
+    return k.location or ""
 
 
 def rank_location_for(c, k) -> tuple[str, list[dict]]:
