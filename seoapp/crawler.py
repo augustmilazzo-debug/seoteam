@@ -79,6 +79,8 @@ class Crawler:
             r = self.get(self.start, allow_redirects=True)
             site["home_status"] = r.status_code
             site["final_home_url"] = normalize(r.url)
+            from .publish import detect_platform
+            site["platform"] = detect_platform(r.text or "", dict(r.headers))
             self.start = normalize(r.url)
             self.host = bare_host(self.start)
         except requests.RequestException as e:

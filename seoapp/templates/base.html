@@ -26,6 +26,20 @@ document.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click'
   const el = document.getElementById(b.dataset.copy);
   navigator.clipboard.writeText(el.value || el.innerText).then(() => { const t = b.innerText; b.innerText = 'Copied'; setTimeout(() => b.innerText = t, 1200); });
 }));
+document.querySelectorAll('[data-copy-rich]').forEach(b => b.addEventListener('click', async () => {
+  const el = document.getElementById(b.dataset.copyRich);
+  const t = b.innerText;
+  try {
+    await navigator.clipboard.write([new ClipboardItem({
+      'text/html': new Blob([el.innerHTML], { type: 'text/html' }),
+      'text/plain': new Blob([el.innerText], { type: 'text/plain' }),
+    })]);
+  } catch (e) {
+    const r = document.createRange(); r.selectNodeContents(el);
+    const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); document.execCommand('copy'); sel.removeAllRanges();
+  }
+  b.innerText = 'Copied'; setTimeout(() => b.innerText = t, 1200);
+}));
 document.querySelectorAll('[data-check-all]').forEach(cb => cb.addEventListener('change', () => {
   document.querySelectorAll('input[name=ids]').forEach(x => x.checked = cb.checked);
 }));

@@ -15,7 +15,7 @@ from sqlalchemy import select
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import audit, blog, config, crawler, jobs, locations, overlap, sources
+from . import audit, blog, config, crawler, jobs, locations, overlap, publish, sources
 from .db import BlogPost, Client, GbpPost, Job, Keyword, Page, Recommendation, SessionLocal, init_db, now
 
 
@@ -54,7 +54,7 @@ def ago(d):
 templates.env.filters["md"] = lambda s: md.render(s or "")
 templates.env.filters["ago"] = ago
 templates.env.globals.update(CATEGORIES=CATEGORIES, JOB_LABELS=jobs.JOB_LABELS, integrations=config.integrations,
-                             RANK_DEPTH=sources.RANK_DEPTH)
+                             RANK_DEPTH=sources.RANK_DEPTH, PLATFORMS=publish.PLATFORMS)
 
 
 # -- auth ---------------------------------------------------------------------
@@ -468,8 +468,8 @@ def page_add_keyword(pid: int, keyword: str = Form(...), role: str = Form("secon
 
 BLOG_STAGES = [  # status, label, badge
     ("review", "Ready for your review", "b-high"), ("writing", "Being written", "b-brand"),
-    ("idea", "Ideas", "b-gray"), ("approved", "Approved", "b-brand"), ("synced", "Draft in WordPress", "b-ok"),
-    ("published", "Published", "b-ok"), ("rejected", "Rejected", "b-gray"),
+    ("idea", "Ideas", "b-gray"), ("approved", "Approved", "b-brand"), ("published", "Published", "b-ok"),
+    ("synced", "Published", "b-ok"), ("rejected", "Rejected", "b-gray"),
 ]
 
 
@@ -520,6 +520,8 @@ def blog_detail(request: Request, bid: int):
                                   items=overlap.inventory(c, exclude_post_id=b.id))[:6]
         return render(request, "blog_post.html", c=c, s=client_stats(c), tab="blog", b=b, job=job, checks=checks,
                       loc_label=loc_label, similar=similar, DUPLICATE=overlap.DUPLICATE,
+                      platform=publish.platform_for(c), pinfo=publish.PLATFORMS[publish.platform_for(c)],
+                      is_connected=publish.connected(c), manual=request.query_params.get("manual") == "1",
                       preview=preview, faq_text=faq_text, schema=schema, ctx=ctx, stages={st: (label, cls) for st, label, cls in BLOG_STAGES},
                       msg=request.query_params.get("msg", ""), err=request.query_params.get("err", ""))
 
@@ -578,18 +580,26 @@ def blog_status(request: Request, bid: int, status: str = Form(...)):
     return back(request, f"/blog/{bid}")
 
 
-@app.post("/blog/{bid}/sync")
-def blog_sync(bid: int):
+@app.post("/blog/{bid}/send")
+def blog_send(bid: int):
     with SessionLocal() as db:
         b = get_or_404(db, BlogPost, bid)
         c = b.client
+        platform = publish.platform_for(c)
+        if not (publish.PLATFORMS[platform]["api"] and publish.connected(c)):
+            return RedirectResponse(f"/blog/{bid}?manual=1#manual", status_code=303)
         try:
-            b.cms_id, b.cms_edit_url, b.cms_check = blog.wp_push(c.wp or {}, b, c.profile or {}, blog.site_context(c))
-        except blog.WordPressError as e:
+            b.cms_id, b.cms_edit_url, b.cms_check = publish.send(c, b)
+        except publish.PublishError as e:
             return RedirectResponse(f"/blog/{bid}?err=" + quote(str(e)), status_code=303)
-        b.status, b.synced_at, b.updated_at = "synced", now(), now()
+        b.status, b.synced_at, b.updated_at = "published", now(), now()
         db.commit()
-    return RedirectResponse(f"/blog/{bid}?msg=" + quote("Sent to WordPress as a draft"), status_code=303)
+    return RedirectResponse(f"/blog/{bid}?msg=" + quote(f"Sent to {platform} as a draft and marked Published"), status_code=303)
+
+
+@app.post("/blog/{bid}/sync")
+def blog_sync(bid: int):
+    return blog_send(bid)
 
 
 @app.get("/blog/{bid}/export.html")
@@ -656,26 +666,51 @@ def gsc_save(cid: int, gsc_property: str = Form(""), action: str = Form("save"))
     return RedirectResponse(f"/clients/{cid}/settings?{key}=" + quote(msg) + "#gsc", status_code=303)
 
 
+@app.post("/clients/{cid}/website")
+async def client_website(request: Request, cid: int):
+    form = await request.form()
+    platform = str(form.get("platform") or "Other")
+    if platform not in publish.PLATFORMS:
+        raise HTTPException(400)
+    action = str(form.get("action") or "save")
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        conf = dict(c.wp or {}) if c.cms == platform else {}
+        for key, _, kind, _ in publish.PLATFORMS[platform].get("fields", []):
+            v = str(form.get(key, "")).strip()
+            if v or kind != "secret":
+                conf[key] = v
+        c.cms = platform
+        c.wp = {} if action == "disconnect" else conf
+        db.commit()
+        msg = f"Saved: {platform}"
+        if action == "test" and c.wp:
+            try:
+                msg = publish.test(c)
+            except publish.PublishError as e:
+                return RedirectResponse(f"/clients/{cid}/settings?wp_err=" + quote(str(e)) + "#website", status_code=303)
+    return RedirectResponse(f"/clients/{cid}/settings?wp_msg=" + quote(msg) + "#website", status_code=303)
+
+
 @app.post("/clients/{cid}/wordpress")
 def client_wordpress(cid: int, wp_url: str = Form(""), wp_user: str = Form(""), wp_app_password: str = Form(""),
                      action: str = Form("save")):
+    """Older form fields; same as the website connection with WordPress selected."""
     with SessionLocal() as db:
         c = get_client(db, cid)
-        wp = dict(c.wp or {})
+        wp = dict(c.wp or {}) if c.cms == "WordPress" else {}
         wp["url"], wp["user"] = wp_url.strip(), wp_user.strip()
         if wp_app_password.strip():
             wp["app_password"] = wp_app_password.strip()
-        if action == "disconnect":
-            wp = {}
-        c.wp = wp
+        c.cms, c.wp = "WordPress", ({} if action == "disconnect" else wp)
         db.commit()
         msg = "WordPress settings saved"
-        if action == "test" and wp:
+        if action == "test" and c.wp:
             try:
-                msg = blog.wp_test(wp)
-            except blog.WordPressError as e:
-                return RedirectResponse(f"/clients/{cid}/settings?wp_err=" + quote(str(e)) + "#wordpress", status_code=303)
-    return RedirectResponse(f"/clients/{cid}/settings?wp_msg=" + quote(msg) + "#wordpress", status_code=303)
+                msg = publish.test(c)
+            except publish.PublishError as e:
+                return RedirectResponse(f"/clients/{cid}/settings?wp_err=" + quote(str(e)) + "#website", status_code=303)
+    return RedirectResponse(f"/clients/{cid}/settings?wp_msg=" + quote(msg) + "#website", status_code=303)
 
 
 GBP_FIELDS = [
@@ -784,7 +819,9 @@ def client_settings(request: Request, cid: int):
                 sites_err = str(e)
         return render(request, "client_settings.html", c=c, s=client_stats(c), tab="settings",
                       p=c.profile or {}, gsc_email=sources.gsc_service_email(), gsc_sites=sites, gsc_sites_err=sites_err,
-                      oauth_ready=sources.google_oauth_ready())
+                      oauth_ready=sources.google_oauth_ready(),
+                      platform=request.query_params.get("platform") if request.query_params.get("platform") in publish.PLATFORMS
+                      else publish.platform_for(c))
 
 
 def _lines(s: str) -> list[str]:

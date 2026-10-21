@@ -79,22 +79,39 @@
   </div>
 </div>
 
-<div class="panel" style="margin-top: 24px;" id="wordpress">
-  <h3 style="margin-top: 0;">WordPress connection (for sending blog drafts)</h3>
+<div class="panel" style="margin-top: 24px;" id="website">
+  <h3 style="margin-top: 0;">Website connection (for publishing blog posts)</h3>
   {% if request.query_params.get('wp_msg') %}<div class="notice ok">{{ request.query_params.get('wp_msg') }}</div>{% endif %}
   {% if request.query_params.get('wp_err') %}<div class="notice"><b>Connection failed:</b> {{ request.query_params.get('wp_err') }}</div>{% endif %}
-  <p class="small muted">In the client's WordPress: <b>Users → Profile</b> (an Editor or Administrator account) → <b>Application Passwords</b> → name it "SEO Command Center" → <b>Add New Application Password</b>, and paste it below. Drafts are never published automatically.</p>
-  <form method="post" action="/clients/{{ c.id }}/wordpress">
+  <form method="get" action="/clients/{{ c.id }}/settings#website" class="row small">
+    <span>Website builder:</span>
+    <select name="platform" onchange="this.form.submit()" style="width: auto;">
+      {% for name in PLATFORMS %}<option {{ 'selected' if name == platform }}>{{ name }}</option>{% endfor %}
+    </select>
+    <span class="muted">{% if PLATFORMS[platform].api %}Posts are sent automatically as drafts.{% else %}No blog API: posts are published with copy-and-paste steps.{% endif %}</span>
+  </form>
+  {% set pinfo = PLATFORMS[platform] %}
+  {% if pinfo.api %}
+  <p class="small muted">{{ pinfo.help }}</p>
+  <form method="post" action="/clients/{{ c.id }}/website">
+    <input type="hidden" name="platform" value="{{ platform }}">
     <div class="row">
-      <div class="grow"><label>Site address</label><input type="text" name="wp_url" value="{{ (c.wp or {}).get('url', c.url) }}"></div>
-      <div class="grow"><label>WordPress username</label><input type="text" name="wp_user" value="{{ (c.wp or {}).get('user', '') }}"></div>
-      <div class="grow"><label>Application Password</label><input type="password" name="wp_app_password" placeholder="{{ '•••••••• (saved; leave blank to keep)' if (c.wp or {}).get('app_password') else 'xxxx xxxx xxxx xxxx xxxx xxxx' }}"></div>
+      {% for key, label, kind, ph in pinfo.fields %}
+      <div class="grow"><label>{{ label }}</label>
+        {% if kind == 'secret' %}<input type="password" name="{{ key }}" placeholder="{{ '•••••••• (saved; leave blank to keep)' if (c.wp or {}).get(key) and platform == c.cms else ph }}">
+        {% else %}<input type="text" name="{{ key }}" value="{{ (c.wp or {}).get(key, c.url if key == 'url' else '') if platform == c.cms else (c.url if key == 'url' else '') }}" placeholder="{{ ph }}">{% endif %}</div>
+      {% endfor %}
     </div>
     <div class="row" style="margin-top: 10px;">
       <button class="primary" name="action" value="test">Save and test connection</button>
       {% if c.wp %}<button class="danger" name="action" value="disconnect">Disconnect</button>{% endif %}
     </div>
   </form>
+  {% else %}
+  <form method="post" action="/clients/{{ c.id }}/website"><input type="hidden" name="platform" value="{{ platform }}">
+    {% if platform != c.cms %}<button class="primary" name="action" value="save">Save: this client uses {{ platform }}</button>{% else %}<p class="small" style="margin: 0;">Nothing to connect. Each post's Publish button shows the {{ platform }} steps and copy buttons.</p>{% endif %}
+  </form>
+  {% endif %}
 </div>
 
 <div class="panel" style="margin-top: 24px;">

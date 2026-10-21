@@ -26,6 +26,28 @@
 <div class="notice" style="margin-top: 14px;">Writing failed. <a href="/jobs/{{ job.id }}">See why</a>, then try again.</div>
 {% endif %}
 
+{% if manual and b.body %}
+<div class="panel" id="manual" style="margin-top: 16px; border-color: var(--brand);">
+  <h3 style="margin-top: 0;">Publish to {{ platform }}: copy and paste</h3>
+  <ol class="small">{% for step in pinfo.get('steps', PLATFORMS['Other']['steps']) %}<li>{{ step }}</li>{% endfor %}</ol>
+  <div class="row">
+    <button type="button" class="primary" data-copy-rich="post-preview">Copy formatted article</button>
+    <button type="button" data-copy="copy-title">Copy title</button>
+    <button type="button" data-copy="copy-seo-title">Copy SEO title</button>
+    <button type="button" data-copy="copy-meta">Copy meta description</button>
+    <button type="button" data-copy="copy-slug">Copy URL slug</button>
+    {% if schema %}<button type="button" data-copy="copy-schema-tag">Copy schema</button>{% endif %}
+    <button type="button" data-copy="post-html">Copy HTML</button>
+  </div>
+  <textarea id="copy-title" style="display: none;">{{ b.title }}</textarea>
+  <textarea id="copy-seo-title" style="display: none;">{{ b.meta_title }}</textarea>
+  <textarea id="copy-meta" style="display: none;">{{ b.meta_description }}</textarea>
+  <textarea id="copy-slug" style="display: none;">{{ b.slug }}</textarea>
+  <textarea id="copy-schema-tag" style="display: none;"><script type="application/ld+json">{{ schema }}</script></textarea>
+  <form method="post" action="/blog/{{ b.id }}/status" style="margin-top: 12px;"><input type="hidden" name="status" value="published"><button class="ok">I've added it to {{ platform }}: mark as published</button></form>
+</div>
+{% endif %}
+
 {% if not b.body %}
 <div class="panel" style="margin-top: 16px;">
   {% if b.angle %}<h3 style="margin-top: 0;">Why this post</h3><div class="md">{{ b.angle|md|safe }}</div>{% endif %}
@@ -44,7 +66,7 @@
         <button type="button" class="sm" data-copy="post-html">Copy HTML</button>
       </div>
       <h1 style="font-size: 26px;">{{ b.title }}</h1>
-      <div class="md blog-preview">{{ preview|safe }}</div>
+      <div class="md blog-preview" id="post-preview">{{ preview|safe }}</div>
       <textarea id="post-html" style="display: none;">{{ preview }}</textarea>
     </div>
 
@@ -69,27 +91,29 @@
 
   <div>
     <div class="panel">
-      <h3 style="margin-top: 0;">Publish</h3>
-      {% if b.status in ('approved', 'synced') %}
-        {% if c.wp and c.wp.get('url') %}
-        <form method="post" action="/blog/{{ b.id }}/sync"><button class="primary" style="width: 100%;">{{ 'Update the WordPress draft' if b.cms_id else 'Send to WordPress as a draft' }}</button></form>
-        {% if b.cms_edit_url %}<p class="small"><a href="{{ b.cms_edit_url }}" target="_blank" rel="noopener">Open the draft in WordPress →</a> (sent {{ b.synced_at|ago }})</p>
+      <h3 style="margin-top: 0;">Publish to {{ platform }}</h3>
+      {% if b.status in ('review', 'approved') %}
+        {% if pinfo.api and is_connected %}
+        <form method="post" action="/blog/{{ b.id }}/send"><button class="primary" style="width: 100%;">Send to {{ platform }}</button></form>
+        <p class="small muted">Goes into {{ platform }} as a draft for your final look, and this post is marked Published.</p>
+        {% elif pinfo.api %}
+        <p class="small">Connect this client's {{ platform }} in <a href="/clients/{{ c.id }}/settings#website">Settings</a> to send posts with one click.</p>
+        <a class="btn" href="?manual=1#manual" style="width: 100%; text-align: center;">Copy and paste instead</a>
+        {% else %}
+        <a class="btn btn-primary" href="?manual=1#manual" style="width: 100%; text-align: center;">Publish to {{ platform }}</a>
+        <p class="small muted">{{ platform }} has no API for blog posts, so you'll get each piece ready to paste.</p>
+        {% endif %}
+      {% elif b.status in ('published', 'synced') %}
+        <p class="small"><span class="badge b-ok">Published</span>{% if b.synced_at %} Sent to {{ platform }} {{ b.synced_at|ago }}.{% endif %}</p>
+        {% if b.cms_edit_url %}<p class="small"><a class="btn sm" href="{{ b.cms_edit_url }}" target="_blank" rel="noopener">Open in {{ platform }}</a></p>{% endif %}
         {% set ck = b.cms_check or {} %}
         <div class="small">
-          {% if ck.schema == true %}✅ Schema confirmed in the WordPress draft{% elif ck.schema == false %}⚠️ <b>WordPress removed the schema.</b> Connect with an Administrator account, or paste the schema below into your SEO plugin's custom schema box.{% endif %}
-          {% if ck.seo_fields == false %}<br>⚠️ Paste the SEO title and meta description into Yoast / Rank Math in WordPress (the site doesn't accept them automatically).{% elif ck.seo_fields %}<br>✅ SEO title, description and focus keyword sent{% endif %}
+          {% if ck.schema == true %}✅ Schema confirmed in the {{ platform }} draft{% elif ck.schema == false %}⚠️ <b>{{ platform }} removed the schema.</b> Connect with an Administrator account, or paste the schema (below) into your SEO plugin's custom schema box.{% endif %}
+          {% if ck.seo_fields == false %}<br>⚠️ Paste the SEO title and meta description into the post's SEO settings in {{ platform }}.{% elif ck.seo_fields %}<br>✅ SEO title and description sent{% endif %}
           {% if ck.category %}<br>✅ Category set: {{ b.category }}{% endif %}
-          <br>📷 Add a featured image in WordPress (used by Google, social shares and Discover).
-        </div>{% endif %}
-        {% else %}
-        <p class="small">Connect this client's WordPress in <a href="/clients/{{ c.id }}/settings#wordpress">Settings</a> to send drafts with one click. Otherwise use <b>Copy HTML</b> and paste into the editor (WordPress: Code editor; Wix/Squarespace/Webflow: an HTML/embed block).</p>
-        {% endif %}
-        <form method="post" action="/blog/{{ b.id }}/status" style="margin-top: 8px;"><input type="hidden" name="status" value="published"><button class="ok" style="width: 100%;">I published it</button></form>
-      {% elif b.status == 'review' %}
-        <p class="small">Review the post, edit anything, then approve it to send it to WordPress.</p>
-        <form method="post" action="/blog/{{ b.id }}/status"><input type="hidden" name="status" value="approved"><button class="primary" style="width: 100%;">Approve</button></form>
-      {% elif b.status == 'published' %}
-        <p class="small">Published. Its keyword can be tracked from the Keywords tab.</p>
+          {% if ck.note %}<br>ℹ️ {{ ck.note }}{% endif %}
+        </div>
+        {% if pinfo.api and is_connected %}<form method="post" action="/blog/{{ b.id }}/send" style="margin-top: 8px;"><button class="sm">Send updated version</button></form>{% endif %}
       {% endif %}
       <form method="post" action="/blog/{{ b.id }}/write" style="margin-top: 14px;">
         <label style="margin-top: 0;">Ask for a rewrite</label>

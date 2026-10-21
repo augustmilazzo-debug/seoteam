@@ -1019,6 +1019,10 @@ def step_ranks(db, c: Client, log, page_url: str = ""):
 # -- job handlers -------------------------------------------------------------
 def job_audit(db, c: Client, log, full=True):
     site = step_crawl(db, c, log)
+    if site.get("platform") and (c.cms or "unknown") in ("unknown", "", "Other"):
+        c.cms = site["platform"]
+        db.commit()
+        log(f"Website platform detected: {c.cms}")
     if not site.get("home_status"):
         step_technical(db, c, site, log)
         c.last_audit_at = now()

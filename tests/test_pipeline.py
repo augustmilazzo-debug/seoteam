@@ -326,16 +326,15 @@ def test_blog_engine_and_wordpress_sync():
             r = tc.post(f"/clients/{cid}/wordpress", data={"wp_url": "http://127.0.0.1:8802", "wp_user": "editor",
                                                           "wp_app_password": "app pass", "action": "test"})
             assert "Connected as Editor" in r.text
-            tc.post(f"/blog/{bid}/status", data={"status": "approved"})
-            r = tc.post(f"/blog/{bid}/sync")
-            assert "Sent to WordPress as a draft" in r.text
-            assert "Open the draft in WordPress" in r.text
+            r = tc.post(f"/blog/{bid}/send")  # straight from review, no separate approve step
+            assert "Sent to WordPress as a draft and marked Published" in r.text
+            assert "Open in WordPress" in r.text
             sent = FakeWordPress.posts["100"]
             assert sent["status"] == "draft" and sent["slug"] == "how-long-does-lip-filler-last"
             assert "application/ld+json" in sent["content"] and "FAQPage" in sent["content"]
             assert sent["categories"] == [12] and '"BlogPosting"' in sent["content"] and "dateModified" in sent["content"]
             assert "Schema confirmed in the WordPress draft" in r.text and "Category set" in r.text
-            tc.post(f"/blog/{bid}/sync")  # second sync updates the same draft
+            tc.post(f"/blog/{bid}/send")  # sending again updates the same draft
             assert list(FakeWordPress.posts) == ["100"]
             r = tc.post(f"/clients/{cid}/blog/new", data={"title": "Our spring specials", "notes": "x"},
                         follow_redirects=False)
@@ -343,7 +342,7 @@ def test_blog_engine_and_wordpress_sync():
             assert tc.get(f"/clients/{cid}/blog").status_code == 200
             assert tc.get(f"/blog/{bid}/export.html").status_code == 200
         with SessionLocal() as db:
-            assert db.get(BlogPost, bid).status == "synced"
+            assert db.get(BlogPost, bid).status == "published"
     finally:
         wp_server.shutdown()
 
@@ -574,3 +573,83 @@ def test_blog_schema_does_not_duplicate_seo_plugin():
     assert [n["@type"] for n in lean["@graph"]] == ["FAQPage"]
     html_out = blog.full_html(post, profile, {}, include_schema=False)
     assert 'id="a"' in html_out and 'href="#a"' in html_out and "Medically reviewed by <strong>Dr. Jane Kim, MD</strong>" in html_out
+
+
+def test_publish_to_other_platforms(monkeypatch):
+    from fastapi.testclient import TestClient
+    from seoapp import publish
+    from seoapp.db import BlogPost
+    from seoapp.main import app
+
+    assert publish.detect_platform('<link href="/wp-content/themes/x.css">', {}) == "WordPress"
+    assert publish.detect_platform('<html data-wf-site="abc">', {}) == "Webflow"
+    assert publish.detect_platform('<script src="https://cdn.shopify.com/x.js">', {}) == "Shopify"
+    assert publish.detect_platform('<img src="https://static.wixstatic.com/a.png">', {}) == "Wix"
+    assert publish.detect_platform('<link href="https://static1.squarespace.com/x">', {}) == "Squarespace"
+
+    calls = []
+
+    class Resp:
+        def __init__(self, status, body):
+            self.status_code, self._b, self.text, self.content = status, body, str(body), b"x"
+
+        def json(self):
+            return self._b
+
+    def fake(method, url, **kw):
+        calls.append((method, url, kw.get("json")))
+        if "webflow" in url:
+            if url.endswith("/sites"):
+                return Resp(200, {"sites": [{"id": "s1"}]})
+            if url.endswith("/collections"):
+                return Resp(200, {"collections": [{"id": "col1", "displayName": "Blog Posts", "slug": "blog-posts"}]})
+            if url.endswith("/collections/col1"):
+                return Resp(200, {"fields": [{"slug": "name", "type": "PlainText"}, {"slug": "slug", "type": "PlainText"},
+                                             {"slug": "post-body", "type": "RichText"}, {"slug": "post-summary", "type": "PlainText"}]})
+            return Resp(200, {"id": "item9"})
+        if url.endswith("/blogs.json"):
+            return Resp(200, {"blogs": [{"id": 55, "title": "News"}]})
+        return Resp(201, {"article": {"id": 777}})
+    monkeypatch.setattr(publish.requests, "request", fake)
+
+    with SessionLocal() as db:
+        c = db.scalars(__import__("sqlalchemy").select(Client)).first()
+        cid = c.id
+        src = next(b for b in c.blog_posts if b.body)
+        b2 = BlogPost(client_id=cid, title=src.title, body=src.body, faqs=src.faqs, visuals=src.visuals, slug="post-two",
+                      meta_title=src.meta_title, meta_description=src.meta_description, status="review",
+                      target_keyword="x", secondary_keywords=[])
+        db.add(b2)
+        db.commit()
+        bid = b2.id
+    with TestClient(app) as tc:
+        tc.post(f"/clients/{cid}/website", data={"platform": "Webflow", "token": "wf-token", "collection_id": "", "action": "save"})
+        r = tc.post(f"/blog/{bid}/send")
+        assert "Sent to Webflow as a draft" in r.text
+        body = next(j for m, u, j in calls if m == "POST" and u.endswith("/collections/col1/items"))
+        assert body["isDraft"] is True and body["fieldData"]["slug"] == "post-two" and "<h2" in body["fieldData"]["post-body"]
+        assert "application/ld+json" not in body["fieldData"]["post-body"]
+
+        tc.post(f"/clients/{cid}/website", data={"platform": "Shopify", "shop": "glow.myshopify.com", "token": "shpat_x",
+                                                 "blog_id": "", "action": "save"})
+        with SessionLocal() as db:
+            b = db.get(BlogPost, bid)
+            b.status, b.cms_id = "review", ""
+            db.commit()
+        r = tc.post(f"/blog/{bid}/send")
+        assert "Sent to Shopify as a draft" in r.text
+        art = next(j for m, u, j in calls if u.endswith("/blogs/55/articles.json"))["article"]
+        assert art["published"] is False and art["metafields"][0]["key"] == "title_tag"
+
+        tc.post(f"/clients/{cid}/website", data={"platform": "Wix", "action": "save"})
+        with SessionLocal() as db:
+            db.get(BlogPost, bid).status = "review"
+            db.commit()
+        r = tc.post(f"/blog/{bid}/send", follow_redirects=True)
+        assert "Publish to Wix: copy and paste" in r.text and "Structured data markup" in r.text
+        assert "Copy formatted article" in r.text
+        tc.post(f"/blog/{bid}/status", data={"status": "published"})
+        tc.post(f"/clients/{cid}/website", data={"platform": "WordPress", "url": "http://127.0.0.1:8802", "user": "editor",
+                                                 "app_password": "app pass", "action": "save"})
+    with SessionLocal() as db:
+        assert db.get(BlogPost, bid).status == "published"

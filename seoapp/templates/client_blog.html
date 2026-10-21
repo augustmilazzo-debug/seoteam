@@ -7,7 +7,7 @@
       <li><b>Ideas</b> come from your target keywords and the questions people search, ranked by priority. Add your own on the right.</li>
       <li>Click <b>Write it</b>. Claude studies the pages ranking for the keyword and writes a full post built for Google and AI answers: quick answer, takeaways, question headings, tables/charts, FAQs, schema and internal links.</li>
       <li><b>Review</b> it, edit anything, ask for a rewrite, then <b>Approve</b>.</li>
-      <li><b>Send to WordPress</b> creates a draft in the client's WordPress for final review and publishing. For other platforms, copy or download the HTML.</li>
+      <li><b>Send to {{ c.cms if c.cms in PLATFORMS and c.cms != 'Other' else 'the website' }}</b> puts it on the client's site as a draft for a final look and marks it Published (WordPress, Webflow and Shopify send automatically; Wix, Squarespace and GoDaddy get copy-ready pieces and steps).</li>
     </ol>
     <form method="post" action="/clients/{{ c.id }}/run/blog" style="margin-top: 12px;"><button>Suggest more blog ideas</button></form>
   </div>
@@ -47,7 +47,7 @@
         <form class="inline" method="post" action="/blog/{{ b.id }}/write"><button class="sm primary">Write it</button></form>
         <form class="inline" method="post" action="/blog/{{ b.id }}/status"><input type="hidden" name="status" value="rejected"><button class="sm">Skip</button></form>
       {% elif st == 'review' %}<a class="btn sm btn-primary" href="/blog/{{ b.id }}">Review</a>
-      {% elif st == 'synced' and b.cms_edit_url %}<a class="btn sm" href="{{ b.cms_edit_url }}" target="_blank" rel="noopener">Open in WordPress</a>
+      {% elif st in ('synced', 'published') and b.cms_edit_url %}<a class="btn sm" href="{{ b.cms_edit_url }}" target="_blank" rel="noopener">Open in {{ c.cms if c.cms in PLATFORMS else 'website' }}</a>
       {% else %}<a class="btn sm" href="/blog/{{ b.id }}">Open</a>{% endif %}
     </td>
   </tr>
