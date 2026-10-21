@@ -8,8 +8,13 @@
     <div class="small"><a href="{{ p.url }}" target="_blank" rel="noopener">{{ p.url }}</a></div>
   </div>
   {% if row %}<span class="badge {{ info[row.status][1] }}" style="font-size: 14px;">{{ info[row.status][0] }}</span>{% endif %}
+  {% if dfs_ready and row and row.kws %}<form class="inline" method="post" action="/pages/{{ p.id }}/ranks"><button>Check this page's rankings</button></form>{% endif %}
   <form class="inline" method="post" action="/pages/{{ p.id }}/review"><button class="primary">Review this page now</button></form>
 </div>
+{% if rank_job and rank_job.status in ('queued', 'running') %}
+<div class="notice info" style="margin-top: 12px;">Checking this page's keywords on Google and Maps (under a minute). This page refreshes on its own.</div>
+<meta http-equiv="refresh" content="6">
+{% endif %}
 {% if review_job and review_job.status in ('queued', 'running') %}
 <div class="notice info" style="margin-top: 12px;">Claude is reviewing this page against the top results (1-2 minutes). This page refreshes on its own.</div>
 <meta http-equiv="refresh" content="8">

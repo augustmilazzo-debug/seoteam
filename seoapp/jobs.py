@@ -724,10 +724,10 @@ def _check(c, k, place, domain, name, local):
     return org, maps
 
 
-def step_ranks(db, c: Client, log):
-    tracked = [k for k in c.keywords if k.tracked]
+def step_ranks(db, c: Client, log, page_url: str = ""):
+    tracked = [k for k in c.keywords if k.tracked and (not page_url or k.target_url == page_url)]
     if not tracked:
-        log("No tracked keywords yet")
+        log("No tracked keywords for this page yet" if page_url else "No tracked keywords yet")
         return
     if not sources.dfs_enabled():
         log("DataForSEO not connected: positions come from Search Console only")
@@ -790,7 +790,8 @@ def step_ranks(db, c: Client, log):
             locations.set_gbp(c, l["key"], {**g, "_maps_competitors": sorted(seen, key=lambda t: -seen[t])[:8]})
     if alerts:
         log(f"{alerts} notable ranking change(s) recorded")
-    c.last_rank_at = now()
+    if not page_url:
+        c.last_rank_at = now()
     db.commit()
 
 
@@ -828,8 +829,8 @@ def ranks_due(c: Client, slack_days: int = 0) -> bool:
     return not c.last_rank_at or now() - c.last_rank_at > dt.timedelta(days=c.rank_interval_days - slack_days)
 
 
-def job_ranks(db, c, log):
-    step_ranks(db, c, log)
+def job_ranks(db, c, log, page_url: str = ""):
+    step_ranks(db, c, log, page_url=page_url)
     safe(step_wrong_page, db, c, log)
     safe(step_measure, db, c, log)
 

@@ -379,8 +379,10 @@ def client_pages(request: Request, cid: int, status: str = ""):
         counts = {k: sum(r["status"] == k for r in rows) for k, _, _ in PAGE_STATUS}
         if status:
             rows = [r for r in rows if r["status"] == status]
+        gsc_ready = bool(config.GSC_SERVICE_ACCOUNT_JSON and c.gsc_property)
         return render(request, "client_pages.html", c=c, s=client_stats(c), tab="pages", rows=rows,
-                      counts=counts, statuses=PAGE_STATUS, info=STATUS_INFO, f_status=status)
+                      counts=counts, statuses=PAGE_STATUS, info=STATUS_INFO, f_status=status,
+                      rank_ready=sources.dfs_enabled() or gsc_ready)
 
 
 @app.get("/clients/{cid}/urls", response_class=HTMLResponse)
@@ -405,8 +407,11 @@ def page_detail(request: Request, pid: int):
         alerts = sorted([a for a in c.alerts if a.page_url == p.url], key=lambda a: a.created_at, reverse=True)[:15]
         review_job = next((j for j in sorted(c.jobs, key=lambda j: -j.id)
                            if j.kind == "review_page" and (j.params or {}).get("page_id") == p.id), None)
+        rank_job = next((j for j in sorted(c.jobs, key=lambda j: -j.id)
+                         if j.kind == "ranks" and (j.params or {}).get("page_url") == p.url), None)
         return render(request, "page_detail.html", c=c, s=client_stats(c), tab="pages", p=p, row=row, recs=recs,
-                      alerts=alerts, info=STATUS_INFO, review_job=review_job)
+                      alerts=alerts, info=STATUS_INFO, review_job=review_job, rank_job=rank_job,
+                      dfs_ready=sources.dfs_enabled())
 
 
 @app.post("/pages/{pid}/review")
@@ -415,6 +420,15 @@ def page_review(pid: int):
         p = get_or_404(db, Page, pid)
         cid = p.client_id
     jobs.enqueue(cid, "review_page", page_id=pid)
+    return RedirectResponse(f"/pages/{pid}", status_code=303)
+
+
+@app.post("/pages/{pid}/ranks")
+def page_ranks(pid: int):
+    with SessionLocal() as db:
+        p = get_or_404(db, Page, pid)
+        cid, url = p.client_id, p.url
+    jobs.enqueue(cid, "ranks", page_url=url)
     return RedirectResponse(f"/pages/{pid}", status_code=303)
 
 

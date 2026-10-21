@@ -1,19 +1,31 @@
 {% extends "client_base.html" %}
 {% macro delta(d) %}{% if d %}<span class="{{ 'pos-up' if d > 0 else 'pos-down' }}">{{ '▲' if d > 0 else '▼' }}{{ d|abs }}</span>{% elif d == 0 %}<span class="muted small">0</span>{% else %}<span class="muted small">–</span>{% endif %}{% endmacro %}
 {% block client %}
-<p class="muted small">Every page that should rank, its target keywords, and where it sits on Google. Rankings are checked weekly. Click a page to see how it compares with the top 3 and what to fix. <a href="/clients/{{ c.id }}/urls">All crawled URLs and technical status →</a></p>
+<div class="panel" style="margin-bottom: 14px;">
+  <div class="row">
+    <div class="grow small">Every page that should rank, its target keyword, and where it sits on Google. Rankings are checked automatically every week. Click <b>Open</b> on any page to see how it compares with the top 3 and what to fix.</div>
+    {% if rank_ready %}<form class="inline" method="post" action="/clients/{{ c.id }}/run/ranks"><button class="primary">Check all rankings now</button></form>
+    {% else %}<a class="btn" href="/settings" title="Connect DataForSEO or Search Console first">Connect a ranking source</a>{% endif %}
+    <form class="inline" method="post" action="/clients/{{ c.id }}/run/page_keywords"><button title="Have the AI choose target keywords for every page">Choose page keywords</button></form>
+  </div>
+  {% if counts.no_target and counts.no_target == counts.values()|sum %}
+  <div class="notice info" style="margin: 12px 0 0;">No page has a target keyword yet. Click <b>Choose page keywords</b> (about a minute), then <b>Check all rankings now</b>.</div>
+  {% elif counts.unchecked %}
+  <div class="notice info" style="margin: 12px 0 0;">{{ counts.unchecked }} page(s) haven't been checked on Google yet. Click <b>Check all rankings now</b>{% if not rank_ready %} after connecting DataForSEO{% endif %}.</div>
+  {% endif %}
+  <p class="small" style="margin: 10px 0 0;"><a href="/clients/{{ c.id }}/urls">All crawled URLs and technical status →</a></p>
+</div>
 
 <div class="row noprint" style="margin-bottom: 12px;">
   <a class="btn sm {{ 'btn-primary' if not f_status }}" href="?">All ({{ counts.values()|sum }})</a>
   {% for k, label, cls in statuses %}{% if counts[k] %}
   <a class="btn sm {{ 'btn-primary' if f_status == k }}" href="?status={{ k }}">{{ label }} ({{ counts[k] }})</a>
   {% endif %}{% endfor %}
-  <form class="inline" method="post" action="/clients/{{ c.id }}/run/page_keywords" style="margin-left: auto;"><button class="sm" title="Have the AI re-choose target keywords for every page">Re-pick page keywords</button></form>
 </div>
 
 <div class="table-wrap">
 <table>
-  <tr><th>Page</th><th>Target keyword</th><th>Google</th><th>Status</th><th>1 wk</th><th>4 wk</th><th>Main gap</th><th>To do</th><th>Reviewed</th></tr>
+  <tr><th>Page</th><th>Target keyword</th><th>Google</th><th>Status</th><th>1 wk</th><th>4 wk</th><th>Main gap</th><th>To do</th><th>Reviewed</th><th></th></tr>
   {% for r in rows %}
   {% set p = r.page %}
   <tr>
@@ -31,9 +43,10 @@
     <td class="small">{{ r.extra.get('main_gap', '')|capitalize or '–' }}</td>
     <td>{% if r.open %}<span class="badge b-brand">{{ r.open }}</span>{% else %}<span class="muted">–</span>{% endif %}</td>
     <td class="small muted nowrap">{{ r.extra.get('optimized_at', '–') }}</td>
+    <td><a class="btn sm btn-primary" href="/pages/{{ p.id }}">Open</a></td>
   </tr>
   {% else %}
-  <tr><td colspan="9" class="empty">No pages yet. Run an audit to crawl the site.</td></tr>
+  <tr><td colspan="10" class="empty">No pages yet. Run an audit to crawl the site.</td></tr>
   {% endfor %}
 </table>
 </div>
