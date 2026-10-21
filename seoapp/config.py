@@ -29,6 +29,12 @@ DATAFORSEO_PASSWORD = _clean(os.environ.get("DATAFORSEO_PASSWORD", ""))
 # each client's Search Console property.
 GSC_SERVICE_ACCOUNT_JSON = os.environ.get("GSC_SERVICE_ACCOUNT_JSON", "")
 
+# "Connect with Google" for Search Console, per client (Google Cloud OAuth client, type "Web application").
+GOOGLE_CLIENT_ID = _clean(os.environ.get("GOOGLE_CLIENT_ID", ""))
+GOOGLE_CLIENT_SECRET = _clean(os.environ.get("GOOGLE_CLIENT_SECRET", ""))
+# The app's public address, for the Google sign-in redirect. Render sets RENDER_EXTERNAL_URL itself.
+APP_BASE_URL = (os.environ.get("APP_BASE_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
+
 PAGESPEED_API_KEY = os.environ.get("PAGESPEED_API_KEY", "")
 
 MAX_PAGES = int(os.environ.get("MAX_PAGES", "300"))
@@ -48,6 +54,7 @@ def integrations() -> dict:
     return {
         "claude": bool(ANTHROPIC_API_KEY),
         "dataforseo": bool(DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD),
-        "gsc": bool(GSC_SERVICE_ACCOUNT_JSON),
+        "gsc": bool(GSC_SERVICE_ACCOUNT_JSON or (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)),
+        "google_oauth": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
         "pagespeed_key": bool(PAGESPEED_API_KEY),
     }

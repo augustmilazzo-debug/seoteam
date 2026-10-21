@@ -247,16 +247,24 @@ def step_profile(db, c: Client, log, force=False):
 
 
 def step_gsc(db, c: Client, log):
-    if not (config.GSC_SERVICE_ACCOUNT_JSON and c.gsc_property):
-        log("Search Console not connected for this client (set the property in client settings)")
+    if not sources.gsc_ready(c):
+        log("Search Console not connected for this client (client → Settings → Connect Google Search Console)")
         return []
     try:
-        rows = sources.gsc_rows(c.gsc_property)
+        rows = sources.gsc_rows(c)
     except Exception as e:
-        log(f"Search Console error: {e}. Check the service account was added as a user on the property.")
+        log(f"Search Console error: {e}")
+        c.gsc_cache = {**(c.gsc_cache or {}), "fetched": dt.date.today().isoformat(), "error": str(e)}
+        db.commit()
         return []
     rows.sort(key=lambda r: -r["impressions"])
-    c.gsc_cache = {"fetched": dt.date.today().isoformat(), "rows": rows[:3000]}
+    prev = {}
+    try:
+        for r in sources.gsc_rows(c, days=28, offset_days=28, dimensions=("page",)):
+            prev[r["page"]] = {"clicks": r["clicks"], "impressions": r["impressions"]}
+    except Exception as e:
+        log(f"Search Console (previous period) unavailable: {e}")
+    c.gsc_cache = {"fetched": dt.date.today().isoformat(), "rows": rows[:3000], "prev_pages": prev}
     by_query: dict[str, dict] = {}
     for r in rows:
         q = by_query.setdefault(r["query"].lower(), {"clicks": 0, "impressions": 0, "pos_w": 0.0, "page": r["page"], "best": r})
@@ -276,6 +284,150 @@ def step_gsc(db, c: Client, log):
     db.commit()
     log(f"Search Console: {len(rows)} query/page rows")
     return rows
+
+
+EXPECTED_CTR = {1: 0.28, 2: 0.15, 3: 0.10, 4: 0.07, 5: 0.05, 6: 0.04, 7: 0.03, 8: 0.025, 9: 0.02, 10: 0.018}
+
+
+def _url_key(u: str) -> str:
+    u = crawler.normalize(u)
+    return re.sub(r"^https?://(www\.)?", "", u).rstrip("/").lower()
+
+
+def step_gsc_insights(db, c: Client, log):
+    """Turn Search Console data into page metrics, alerts, recommendations and keyword ideas."""
+    cache = c.gsc_cache or {}
+    rows = cache.get("rows") or []
+    if not rows:
+        return
+    pages = {_url_key(p.url): p for p in html_pages(c)}
+    brand = overlap.brand_words(c)
+    # 1. Per-page metrics (stored for the Pages view)
+    agg: dict[str, dict] = {}
+    for r in rows:
+        a = agg.setdefault(_url_key(r["page"]), {"clicks": 0, "impressions": 0, "pos_w": 0.0, "queries": []})
+        a["clicks"] += r["clicks"]
+        a["impressions"] += r["impressions"]
+        a["pos_w"] += r["position"] * r["impressions"]
+        a["queries"].append(r)
+    prev = {_url_key(u): v for u, v in (cache.get("prev_pages") or {}).items()}
+    for key, p in pages.items():
+        a, pv = agg.get(key), prev.get(key, {})
+        if not a:
+            p.extra = {**(p.extra or {}), "gsc": {"clicks": 0, "impressions": 0, "clicks_prev": pv.get("clicks", 0),
+                                                  "impressions_prev": pv.get("impressions", 0), "queries": []}}
+            continue
+        top = sorted(a["queries"], key=lambda r: -r["impressions"])[:10]
+        p.extra = {**(p.extra or {}), "gsc": {
+            "clicks": round(a["clicks"]), "impressions": round(a["impressions"]),
+            "ctr": round(a["clicks"] / a["impressions"], 4) if a["impressions"] else 0,
+            "position": round(a["pos_w"] / a["impressions"], 1) if a["impressions"] else None,
+            "clicks_prev": round(pv.get("clicks", 0)), "impressions_prev": round(pv.get("impressions", 0)),
+            "queries": [{"q": r["query"], "clicks": round(r["clicks"]), "impressions": round(r["impressions"]),
+                         "position": round(r["position"], 1)} for r in top]}}
+    seen = set()
+    # 2. Low click-through: shown often on page 1, rarely clicked -> title/description rewrite
+    for key, p in pages.items():
+        g = (p.extra or {}).get("gsc") or {}
+        pos, imp = g.get("position"), g.get("impressions", 0)
+        if not pos or pos > 10 or imp < 150:
+            continue
+        expected = EXPECTED_CTR.get(max(1, round(pos)), 0.018)
+        if g["ctr"] < expected * 0.5:
+            fp = f"rule:gsc_ctr:{p.url}"
+            seen.add(fp)
+            missed = round(imp * expected - g["clicks"])
+            qs = "\n".join(f"- “{q['q']}”: {q['impressions']} impressions, {q['clicks']} clicks, position {q['position']}"
+                           for q in g["queries"][:6])
+            upsert_rec(db, c, {
+                "fingerprint": fp, "category": "on_page", "page_url": p.url, "keyword": (g["queries"] or [{}])[0].get("q", ""),
+                "title": f"Few clicks despite page-1 visibility: rewrite the title and description of {p.url.split('//', 1)[-1]}",
+                "details": f"Google showed this page **{imp:,} times** in 28 days at an average position of **{pos}**, but only "
+                           f"**{g['clicks']}** people clicked (**{g['ctr']:.1%}** vs about {expected:.0%} typical at that position). "
+                           f"That's roughly **{missed} missed visits a month**.\n\nCurrent title: “{p.title}”\n\n"
+                           f"Current description: “{p.meta_description or '(none)'}”\n\nSearches it shows for:\n{qs}\n\n"
+                           "Rewrite both to match those searches: lead with the treatment and city, add a concrete benefit "
+                           "or proof point (rating, provider credentials), and a reason to click now.",
+                "impact": min(9, 5 + imp // 1000), "effort": 1, "confidence": 0.8}, 4)
+    # 3. Two pages showing for the same search (cannibalization)
+    by_q: dict[str, list] = {}
+    for r in rows:
+        by_q.setdefault(r["query"], []).append(r)
+    competing = []
+    for q, rs in by_q.items():
+        total = sum(r["impressions"] for r in rs)
+        if total < 50 or overlap.tokens(q) <= brand or not overlap.tokens(q, brand):
+            continue
+        big = [r for r in rs if r["impressions"] >= total * 0.2]
+        if len(big) >= 2:
+            competing.append((total, q, big))
+    for total, q, big in sorted(competing, reverse=True)[:10]:
+        fp = f"rule:gsc_cannibal:{slug(q)}"
+        seen.add(fp)
+        lines = "\n".join(f"- {r['page']}: {round(r['impressions'])} impressions, position {round(r['position'], 1)}"
+                          for r in sorted(big, key=lambda r: -r["impressions"]))
+        upsert_rec(db, c, {
+            "fingerprint": fp, "category": "on_page", "keyword": q, "page_url": max(big, key=lambda r: r["impressions"])["page"],
+            "title": f"{len(big)} pages compete for “{q}”",
+            "details": f"Google splits “{q}” ({round(total)} impressions in 28 days) between these pages, which "
+                       f"usually holds both back:\n\n{lines}\n\nPick one page to own this search. Make it clearly the best "
+                       "match (title, H1, intro), have the other page link to it with this phrase as anchor text, and "
+                       "trim that topic from the other page. If the pages are near-duplicates, merge them with a 301 redirect.",
+            "impact": 6, "effort": 3, "confidence": 0.7}, 3)
+    # 4. Traffic drops vs the previous 28 days
+    recent = now() - dt.timedelta(days=7)
+    for key, p in pages.items():
+        g = (p.extra or {}).get("gsc") or {}
+        before, after = g.get("clicks_prev", 0), g.get("clicks", 0)
+        if before >= 20 and after <= before * 0.7:
+            drop = round((1 - after / before) * 100)
+            fp = f"rule:gsc_drop:{p.url}"
+            seen.add(fp)
+            upsert_rec(db, c, {
+                "fingerprint": fp, "category": "on_page", "page_url": p.url,
+                "title": f"Google clicks to {p.url.split('//', 1)[-1]} fell {drop}%",
+                "details": f"Clicks from Google: **{before} → {after}** (last 28 days vs the 28 before). Check whether the page "
+                           "changed recently, whether a competitor overtook it (Pages tab → Open → top-3 comparison), and the "
+                           "searches it lost in Search Console. The weekly page review will prioritize this page.",
+                "impact": 7, "effort": 3, "confidence": 0.7}, 4)
+            msg = f"Google clicks down {drop}% ({before} → {after}) vs the previous 28 days"
+            if not any(a.page_url == p.url and a.message == msg and a.created_at > recent for a in c.alerts):
+                db.add(Alert(client_id=c.id, kind="down", keyword="(all searches)", page_url=p.url, message=msg))
+    # 5. Pages Google doesn't show at all
+    total_imp = sum(r["impressions"] for r in rows)
+    invisible = [p for p in pages.values() if (p.extra or {}).get("rank_worthy", True)
+                 and not ((p.extra or {}).get("gsc") or {}).get("impressions") and p.depth < 99]
+    if total_imp >= 500 and invisible:
+        fp = "rule:gsc_invisible"
+        seen.add(fp)
+        upsert_rec(db, c, {
+            "fingerprint": fp, "category": "technical",
+            "title": f"{len(invisible)} page(s) got zero Google impressions in 28 days",
+            "details": "These pages never appeared in Google results. Check each in Search Console → URL Inspection: if "
+                       "it's not indexed, request indexing and add internal links to it; if it is indexed, it's too thin "
+                       "or too similar to another page to rank.\n\n" + "\n".join(f"- {p.url}" for p in invisible[:30]),
+            "impact": 5, "effort": 3, "confidence": 0.7}, 3)
+    for r in c.recommendations:
+        if r.fingerprint.startswith("rule:gsc_") and r.fingerprint not in seen and r.status in ("open", "approved"):
+            r.status, r.result, r.done_at = "resolved", "No longer detected in Search Console data.", now()
+    # 6. Real searches worth targeting -> keyword suggestions
+    have = {k.keyword.lower() for k in c.keywords}
+    ideas = []
+    for q, rs in by_q.items():
+        imp = sum(r["impressions"] for r in rs)
+        pos = sum(r["position"] * r["impressions"] for r in rs) / imp if imp else 99
+        if imp >= 30 and pos <= 30 and q.lower() not in have and overlap.tokens(q, brand):
+            ideas.append((imp, q, rs, pos))
+    added = 0
+    for imp, q, rs, pos in sorted(ideas, reverse=True)[:40]:
+        best = max(rs, key=lambda r: r["impressions"])
+        page = pages.get(_url_key(best["page"]))
+        db.add(Keyword(client_id=c.id, keyword=q.lower(), source="gsc", tracked=False, priority=3,
+                       target_url=page.url if page else "", gsc_impressions=round(imp),
+                       gsc_clicks=round(sum(r["clicks"] for r in rs))))
+        added += 1
+    db.commit()
+    log(f"Search Console insights: {len(seen)} issue(s) flagged, {added} new keyword idea(s) from real searches")
 
 
 def _record_position(k: Keyword, pos, local, url, source):
@@ -533,9 +685,11 @@ def step_optimize(db, c: Client, log):
         p = pages[url]
         last = (p.extra or {}).get("optimized_at")
         age = (dt.date.today() - dt.date.fromisoformat(last)).days if last else 999
-        pos = min((k.position for k in kws if k.position), default=None)
+        g = (p.extra or {}).get("gsc") or {}
+        pos = min((k.position for k in kws if k.position), default=None) or g.get("position")
         striking = 2.0 if pos and 4 <= pos <= 20 else 1.3 if pos and pos > 20 else 1.2 if pos is None else 0.6
-        return (url in recent_drops) * 100 + max(k.priority for k in kws) * striking * 4 + min(age, 60)
+        demand = min(20, (g.get("impressions") or 0) / 200)  # pages Google already shows often are worth more
+        return (url in recent_drops) * 100 + max(k.priority for k in kws) * striking * 4 + min(age, 60) + demand
 
     candidates = []
     for url in by_page:
@@ -870,6 +1024,7 @@ def job_audit(db, c: Client, log, full=True):
         return
     safe(step_profile, db, c, log)
     safe(step_gsc, db, c, log)
+    safe(step_gsc_insights, db, c, log)
     safe(step_keywords, db, c, log)
     safe(step_page_keywords, db, c, log)
     safe(step_metrics, db, c, log)
@@ -909,6 +1064,12 @@ def job_review_page(db, c, log, page_id: int):
         raise RuntimeError("This page has no tracked keywords yet. Add one on the page screen first.")
     _review_page(db, c, p, kws, log)
     log("Review complete")
+
+
+def job_gsc_sync(db, c, log):
+    rows = step_gsc(db, c, log)
+    if rows:
+        step_gsc_insights(db, c, log)
 
 
 def job_page_keywords(db, c, log):
@@ -968,11 +1129,13 @@ HANDLERS = {
     "audit": job_audit, "ranks": job_ranks, "keywords": job_keywords, "profile": job_profile,
     "blog": job_blog, "gbp_audit": job_gbp_audit, "gbp_posts": job_gbp_posts, "draft": job_draft,
     "review_page": job_review_page, "page_keywords": job_page_keywords, "blog_write": job_blog_write,
+    "gsc_sync": job_gsc_sync,
 }
 JOB_LABELS = {
     "audit": "Full site audit", "ranks": "Rank check", "keywords": "Keyword ideas", "profile": "Business profile",
     "blog": "Blog ideas", "gbp_audit": "GBP audit", "gbp_posts": "GBP posts", "draft": "Content draft",
     "review_page": "Page review", "page_keywords": "Page keyword targets", "blog_write": "Blog post writing",
+    "gsc_sync": "Search Console sync",
 }
 
 
@@ -984,6 +1147,8 @@ def tick():
                 enqueue(c.id, "audit")
             elif any(k.tracked for k in c.keywords) and ranks_due(c):
                 enqueue(c.id, "ranks")
+            if sources.gsc_ready(c) and (c.gsc_cache or {}).get("fetched") != dt.date.today().isoformat():
+                enqueue(c.id, "gsc_sync")  # free, so daily: catches traffic drops between weekly checks
             if ai.enabled():
                 primary = locations.all_for(c)[0]["key"]
                 for loc in locations.all_for(c):

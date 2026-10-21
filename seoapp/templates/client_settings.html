@@ -2,6 +2,36 @@
 {% block client %}
 {% if request.query_params.get('saved') %}<div class="notice ok">Saved.</div>{% endif %}
 {% if request.query_params.get('delete_error') %}<div class="notice">To delete, type the client name exactly.</div>{% endif %}
+<div class="panel" id="gsc" style="margin-bottom: 20px;">
+  <h3 style="margin-top: 0;">Google Search Console</h3>
+  {% if request.query_params.get('gsc_msg') %}<div class="notice ok">{{ request.query_params.get('gsc_msg') }}</div>{% endif %}
+  {% if request.query_params.get('gsc_err') %}<div class="notice">{{ request.query_params.get('gsc_err') }}</div>{% endif %}
+  {% set auth = c.gsc_auth or {} %}
+  <div class="row">
+    <div class="grow small">
+      {% if auth.get('refresh_token') %}Signed in as <b>{{ auth.get('email') or 'a Google account' }}</b> (connected {{ auth.get('connected') }}).
+      {% elif gsc_email %}Using the agency service account <code>{{ gsc_email }}</code>; it must be added as a user on this client's property.
+      {% else %}Not connected. Sign in with the Google account that has access to this client's Search Console.{% endif %}
+      {% if c.gsc_property %}<br>Property: <b>{{ c.gsc_property }}</b>{% endif %}
+    </div>
+    {% if oauth_ready %}<a class="btn {{ '' if auth.get('refresh_token') else 'btn-primary' }}" href="/clients/{{ c.id }}/gsc/connect">{{ 'Switch Google account' if auth.get('refresh_token') else 'Connect Google Search Console' }}</a>
+    {% else %}<span class="small muted">To enable "Connect with Google", add <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> in Render (steps in <a href="/settings">Settings</a>).</span>{% endif %}
+  </div>
+  {% if gsc_sites or c.gsc_property %}
+  <form method="post" action="/clients/{{ c.id }}/gsc" class="row" style="margin-top: 12px;">
+    <select class="grow" name="gsc_property">
+      {% if not gsc_sites and c.gsc_property %}<option>{{ c.gsc_property }}</option>{% endif %}
+      {% if gsc_sites %}<option value="">Choose this client's property…</option>{% endif %}
+      {% for site in gsc_sites %}<option value="{{ site.url }}" {{ 'selected' if site.url == c.gsc_property }}>{{ site.url }}{% if site.url.startswith('sc-domain:') %} (whole domain){% endif %}</option>{% endfor %}
+    </select>
+    <button class="primary" name="action" value="save">Save and test</button>
+    {% if auth.get('refresh_token') %}<button class="danger" name="action" value="disconnect">Disconnect</button>{% endif %}
+  </form>
+  {% endif %}
+  {% if gsc_sites_err %}<p class="small" style="color: var(--crit);">{{ gsc_sites_err }}</p>{% endif %}
+  <p class="small muted" style="margin-bottom: 0;">Prefer the "(whole domain)" property when there is one. Search Console powers real clicks and impressions per page and search, low click-through alerts, traffic-drop alerts, pages competing for the same search, and new keyword ideas from real searches.</p>
+</div>
+
 <div class="grid two">
   <div class="panel">
     <h3 style="margin-top: 0;">Client settings</h3>
@@ -10,9 +40,6 @@
       <label>Website</label><input type="text" name="url" value="{{ c.url }}">
       <label>Website platform</label>
       <select name="cms">{% for o in ['unknown', 'WordPress', 'Wix', 'Squarespace', 'Webflow', 'Shopify', 'GoDaddy', 'Other'] %}<option {{ 'selected' if c.cms == o }}>{{ o }}</option>{% endfor %}</select>
-      <label>Google Search Console property</label>
-      <input type="text" name="gsc_property" value="{{ c.gsc_property }}" placeholder="sc-domain:example.com  or  https://example.com/">
-      <p class="small muted">{% if gsc_email %}In Search Console, open this property → Settings → Users and permissions → Add user: <code>{{ gsc_email }}</code> (Restricted is enough).{% else %}Connect Search Console in <a href="/settings">Settings</a> first.{% endif %}</p>
       <label>Rank-check location</label>
       <input type="text" name="rank_location" value="{{ c.rank_location }}" placeholder="Newport Beach,California,United States">
       <p class="small muted">Rankings are checked as if searching from this city. Format: City,State,United States.</p>

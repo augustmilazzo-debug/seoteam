@@ -25,7 +25,7 @@
 
 <div class="table-wrap">
 <table>
-  <tr><th>Page</th><th>Target keyword</th><th>Google</th><th>Status</th><th>1 wk</th><th>4 wk</th><th>Main gap</th><th>To do</th><th>Reviewed</th><th></th></tr>
+  <tr><th>Page</th><th>Target keyword</th><th>Google</th><th>Status</th><th title="Clicks from Google in the last 28 days (Search Console)">Clicks 28d</th><th>1 wk</th><th>4 wk</th><th>Main gap</th><th>To do</th><th>Reviewed</th><th></th></tr>
   {% for r in rows %}
   {% set p = r.page %}
   <tr>
@@ -38,6 +38,9 @@
     <td class="nowrap">{% if r.main and r.main.position %}<b>#{{ r.main.position|round(1) if r.main.position % 1 else r.main.position|int }}</b>{% elif r.main and r.main.last_checked %}<span class="muted">&gt;{{ RANK_DEPTH }}</span>{% else %}<span class="muted">–</span>{% endif %}
       {% if r.main and r.main.local_pack_position %}<div class="small muted">Maps #{{ r.main.local_pack_position }}</div>{% endif %}</td>
     <td><span class="badge {{ info[r.status][1] }}">{{ info[r.status][0] }}</span></td>
+    {% set g = r.extra.get('gsc') %}
+    <td class="nowrap">{% if g %}{{ g.clicks }}{% if g.clicks_prev %}{% set ch = ((g.clicks - g.clicks_prev) / g.clicks_prev * 100)|round|int %} <span class="small {{ 'pos-up' if ch > 0 else 'pos-down' if ch < 0 else 'muted' }}">{{ '+' if ch > 0 }}{{ ch }}%</span>{% endif %}
+      <div class="small muted">{{ '{:,}'.format(g.impressions) }} views</div>{% else %}<span class="muted">–</span>{% endif %}</td>
     <td>{{ delta(r.week) }}</td>
     <td>{{ delta(r.month) }}</td>
     <td class="small">{{ r.extra.get('main_gap', '')|capitalize or '–' }}</td>
@@ -46,7 +49,7 @@
     <td><a class="btn sm btn-primary" href="/pages/{{ p.id }}">Open</a></td>
   </tr>
   {% else %}
-  <tr><td colspan="10" class="empty">No pages yet. Run an audit to crawl the site.</td></tr>
+  <tr><td colspan="11" class="empty">No pages yet. Run an audit to crawl the site.</td></tr>
   {% endfor %}
 </table>
 </div>

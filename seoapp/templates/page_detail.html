@@ -84,6 +84,22 @@
       <tr><td>Last changed</td><td>{{ p.changed_at|ago if p.changed_at else 'no change detected' }}</td></tr>
     </table></div>
 
+    {% set g = (p.extra or {}).get('gsc') %}
+    <h3>Google Search Console (last 28 days)</h3>
+    {% if g %}
+    <div class="panel small">
+      <div class="row" style="gap: 18px;">
+        <div><b style="font-size: 18px;">{{ g.clicks }}</b><div class="muted">clicks{% if g.clicks_prev %} ({{ g.clicks_prev }} before){% endif %}</div></div>
+        <div><b style="font-size: 18px;">{{ '{:,}'.format(g.impressions) }}</b><div class="muted">times shown</div></div>
+        <div><b style="font-size: 18px;">{{ '%.1f'|format((g.ctr or 0) * 100) }}%</b><div class="muted">click rate</div></div>
+        <div><b style="font-size: 18px;">{{ g.position or '–' }}</b><div class="muted">avg position</div></div>
+      </div>
+      {% if g.queries %}<table style="margin-top: 10px;"><tr><th>Search</th><th>Shown</th><th>Clicks</th><th>Pos.</th></tr>
+        {% for q in g.queries %}<tr><td>{{ q.q }}</td><td>{{ q.impressions }}</td><td>{{ q.clicks }}</td><td>{{ q.position }}</td></tr>{% endfor %}</table>
+      {% else %}<p class="muted">Google didn't show this page for any search in the last 28 days.</p>{% endif %}
+    </div>
+    {% else %}<p class="small muted">Connect Search Console in <a href="/clients/{{ c.id }}/settings#gsc">Settings</a> to see real clicks and the searches this page appears for.</p>{% endif %}
+
     <h3>Ranking changes</h3>
     <div class="panel small">
       {% for a in alerts %}<div style="padding: 4px 0;"><span class="{{ 'pos-up' if a.kind in ('up', 'new') else 'pos-down' }}">{{ '▲' if a.kind in ('up', 'new') else '▼' }}</span> “{{ a.keyword }}”: {{ a.message }} <span class="muted">· {{ a.created_at|ago }}</span></div>

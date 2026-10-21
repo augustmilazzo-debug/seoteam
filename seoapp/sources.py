@@ -187,39 +187,152 @@ def maps_rank(keyword: str, domain: str, business_name: str, location_name: str)
 
 
 # -- Google Search Console ----------------------------------------------------
-def _gsc_creds():
+# Each client connects with its own Google sign-in (stored refresh token). The older shared
+# service account still works for clients that added its email to their property.
+GSC_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
+TOKEN_URI = "https://oauth2.googleapis.com/token"
+
+
+class GSCError(Exception):
+    pass
+
+
+def _service_account_creds():
     from google.oauth2 import service_account
 
     raw = config.GSC_SERVICE_ACCOUNT_JSON.strip()
     if not raw.startswith("{"):
         raw = base64.b64decode(raw).decode()
-    return service_account.Credentials.from_service_account_info(
-        json.loads(raw), scopes=["https://www.googleapis.com/auth/webmasters.readonly"])
+    return service_account.Credentials.from_service_account_info(json.loads(raw), scopes=[GSC_SCOPE])
 
 
 def gsc_service_email() -> str:
     if not config.GSC_SERVICE_ACCOUNT_JSON:
         return ""
     try:
-        return _gsc_creds().service_account_email
+        return _service_account_creds().service_account_email
     except Exception:
         return "(could not read GSC_SERVICE_ACCOUNT_JSON)"
 
 
-def gsc_rows(prop: str, days: int = 28) -> list[dict]:
-    """[{query, page, clicks, impressions, ctr, position}] for the last `days` days."""
-    if not (config.GSC_SERVICE_ACCOUNT_JSON and prop):
-        return []
+def google_oauth_ready() -> bool:
+    return bool(config.GOOGLE_CLIENT_ID and config.GOOGLE_CLIENT_SECRET)
+
+
+def google_auth_url(state: str, redirect_uri: str) -> str:
+    from urllib.parse import urlencode
+
+    return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode({
+        "client_id": config.GOOGLE_CLIENT_ID, "redirect_uri": redirect_uri, "response_type": "code",
+        "scope": f"openid email {GSC_SCOPE}", "access_type": "offline", "prompt": "consent select_account",
+        "include_granted_scopes": "true", "state": state})
+
+
+def google_exchange(code: str, redirect_uri: str) -> dict:
+    """Trade the sign-in code for a long-lived refresh token: {refresh_token, email}."""
+    r = requests.post(TOKEN_URI, data={"code": code, "client_id": config.GOOGLE_CLIENT_ID,
+                                       "client_secret": config.GOOGLE_CLIENT_SECRET,
+                                       "redirect_uri": redirect_uri, "grant_type": "authorization_code"}, timeout=30)
+    data = r.json() if r.content else {}
+    if r.status_code != 200:
+        raise GSCError(f"Google sign-in failed: {data.get('error_description') or data.get('error') or r.text[:200]}")
+    if GSC_SCOPE not in data.get("scope", ""):
+        raise GSCError("Search Console access wasn't granted. Connect again and tick the Search Console permission.")
+    if not data.get("refresh_token"):
+        raise GSCError("Google didn't return a long-term token. Remove the app's access at "
+                       "myaccount.google.com/permissions and connect again.")
+    email = ""
+    try:  # the id_token comes straight from Google's token endpoint; read it only to show which account
+        payload = data["id_token"].split(".")[1]
+        email = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))).get("email", "")
+    except (KeyError, IndexError, ValueError):
+        pass
+    return {"refresh_token": data["refresh_token"], "email": email,
+            "connected": dt.date.today().isoformat()}
+
+
+def _client_creds(c):
+    auth = c.gsc_auth or {}
+    if auth.get("refresh_token") and google_oauth_ready():
+        from google.oauth2.credentials import Credentials
+
+        return Credentials(None, refresh_token=auth["refresh_token"], token_uri=TOKEN_URI,
+                           client_id=config.GOOGLE_CLIENT_ID, client_secret=config.GOOGLE_CLIENT_SECRET, scopes=[GSC_SCOPE])
+    if config.GSC_SERVICE_ACCOUNT_JSON:
+        return _service_account_creds()
+    return None
+
+
+def gsc_ready(c) -> bool:
+    return bool(c.gsc_property and _client_creds(c) is not None)
+
+
+def _service(c):
     from googleapiclient.discovery import build
 
-    svc = build("searchconsole", "v1", credentials=_gsc_creds(), cache_discovery=False)
-    end = dt.date.today() - dt.timedelta(days=3)
+    creds = _client_creds(c)
+    if creds is None:
+        raise GSCError("Search Console isn't connected for this client.")
+    return build("searchconsole", "v1", credentials=creds, cache_discovery=False)
+
+
+def _explain(e: Exception) -> str:
+    msg = str(e)
+    if "invalid_grant" in msg:
+        return "The Google connection expired or was removed. Click Connect Google Search Console again."
+    if "403" in msg or "forbidden" in msg.lower() or "permission" in msg.lower():
+        return ("This Google account doesn't have access to that Search Console property. Pick a property from "
+                "the list, or ask the owner to add your Google account as a user in Search Console.")
+    if "404" in msg:
+        return "That Search Console property wasn't found. Pick it from the list instead of typing it."
+    return msg[:300]
+
+
+def gsc_sites(c) -> list[dict]:
+    """Properties the connected account can read: [{url, permission}]."""
+    try:
+        sites = _service(c).sites().list().execute().get("siteEntry", [])
+    except GSCError:
+        raise
+    except Exception as e:
+        raise GSCError(_explain(e)) from e
+    return sorted(({"url": x["siteUrl"], "permission": x.get("permissionLevel", "")} for x in sites
+                   if x.get("permissionLevel") != "siteUnverifiedUser"), key=lambda x: x["url"])
+
+
+def gsc_rows(c, days: int = 28, offset_days: int = 0, dimensions=("query", "page")) -> list[dict]:
+    """[{query, page, clicks, impressions, ctr, position}] for `days` days ending `offset_days` before the latest data."""
+    if not gsc_ready(c):
+        return []
+    end = dt.date.today() - dt.timedelta(days=3 + offset_days)  # Search Console data lags 2-3 days
     start = end - dt.timedelta(days=days - 1)
     body = {"startDate": start.isoformat(), "endDate": end.isoformat(),
-            "dimensions": ["query", "page"], "rowLimit": 25000}
-    rows = svc.searchanalytics().query(siteUrl=prop, body=body).execute().get("rows", [])
-    return [{"query": r["keys"][0], "page": r["keys"][1], "clicks": r["clicks"],
-             "impressions": r["impressions"], "ctr": r["ctr"], "position": r["position"]} for r in rows]
+            "dimensions": list(dimensions), "rowLimit": 25000}
+    try:
+        rows = _service(c).searchanalytics().query(siteUrl=c.gsc_property, body=body).execute().get("rows", [])
+    except GSCError:
+        raise
+    except Exception as e:
+        raise GSCError(_explain(e)) from e
+    out = []
+    for r in rows:
+        keys = dict(zip(dimensions, r["keys"]))
+        out.append({"query": keys.get("query", ""), "page": keys.get("page", ""), "clicks": r["clicks"],
+                    "impressions": r["impressions"], "ctr": r["ctr"], "position": r["position"]})
+    return out
+
+
+def gsc_test(c) -> tuple[bool, str]:
+    if not c.gsc_property:
+        return False, "Choose this client's Search Console property first."
+    try:
+        rows = gsc_rows(c, days=28)
+    except GSCError as e:
+        return False, str(e)
+    clicks = sum(r["clicks"] for r in rows)
+    impressions = sum(r["impressions"] for r in rows)
+    return True, (f"Connected to {c.gsc_property}: {len(rows):,} search/page rows, {clicks:,.0f} clicks and "
+                  f"{impressions:,.0f} impressions in the last 28 days.")
 
 
 def domain_of(url: str) -> str:

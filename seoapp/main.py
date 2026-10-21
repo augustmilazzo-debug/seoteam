@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markdown_it import MarkdownIt
 from sqlalchemy import select
+from itsdangerous import BadSignature, URLSafeTimedSerializer
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import audit, blog, config, crawler, jobs, locations, overlap, sources
@@ -286,7 +287,7 @@ def client_keywords(request: Request, cid: int, show: str = "all"):
             kws = [k for k in kws if not k.tracked]
         kws = sorted(kws, key=lambda k: (not k.tracked, -k.priority, -(k.search_volume or 0), k.keyword))
         pages = [p.url for p in jobs.ranked_pages(c)]
-        gsc_ready = bool(config.GSC_SERVICE_ACCOUNT_JSON and c.gsc_property)
+        gsc_ready = sources.gsc_ready(c)
         return render(request, "client_keywords.html", c=c, s=client_stats(c), tab="keywords", kws=kws,
                       pages=pages, show=show, dfs_ready=sources.dfs_enabled(), gsc_ready=gsc_ready)
 
@@ -390,7 +391,7 @@ def client_pages(request: Request, cid: int, status: str = ""):
         counts = {k: sum(r["status"] == k for r in rows) for k, _, _ in PAGE_STATUS}
         if status:
             rows = [r for r in rows if r["status"] == status]
-        gsc_ready = bool(config.GSC_SERVICE_ACCOUNT_JSON and c.gsc_property)
+        gsc_ready = sources.gsc_ready(c)
         return render(request, "client_pages.html", c=c, s=client_stats(c), tab="pages", rows=rows,
                       counts=counts, statuses=PAGE_STATUS, info=STATUS_INFO, f_status=status,
                       rank_ready=sources.dfs_enabled() or gsc_ready)
@@ -599,6 +600,60 @@ def blog_export(bid: int):
         return HTMLResponse(page, headers={"Content-Disposition": f'attachment; filename="{b.slug or "post"}.html"'})
 
 
+# -- Google Search Console sign-in (per client) ------------------------------
+def _google_redirect_uri(request: Request) -> str:
+    base = config.APP_BASE_URL or str(request.base_url).rstrip("/")
+    return f"{base}/oauth/google/callback"
+
+
+@app.get("/clients/{cid}/gsc/connect")
+def gsc_connect(request: Request, cid: int):
+    if not sources.google_oauth_ready():
+        return RedirectResponse(f"/clients/{cid}/settings?gsc_err=" + quote(
+            "Google sign-in isn't set up yet: add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Render (see Settings).")
+            + "#gsc", status_code=303)
+    state = URLSafeTimedSerializer(config.SECRET_KEY, salt="gsc").dumps({"cid": cid})
+    return RedirectResponse(sources.google_auth_url(state, _google_redirect_uri(request)), status_code=303)
+
+
+@app.get("/oauth/google/callback")
+def gsc_callback(request: Request, state: str = "", code: str = "", error: str = ""):
+    try:
+        cid = URLSafeTimedSerializer(config.SECRET_KEY, salt="gsc").loads(state, max_age=900)["cid"]
+    except (BadSignature, KeyError, TypeError):
+        raise HTTPException(400, "This sign-in link expired. Start again from the client's settings.")
+    if error or not code:
+        return RedirectResponse(f"/clients/{cid}/settings?gsc_err=" + quote(f"Google sign-in was cancelled ({error or 'no code'}).")
+                                + "#gsc", status_code=303)
+    try:
+        auth = sources.google_exchange(code, _google_redirect_uri(request))
+    except sources.GSCError as e:
+        return RedirectResponse(f"/clients/{cid}/settings?gsc_err=" + quote(str(e)) + "#gsc", status_code=303)
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        c.gsc_auth = auth
+        db.commit()
+    return RedirectResponse(f"/clients/{cid}/settings?gsc_msg=" + quote(
+        f"Connected as {auth['email'] or 'your Google account'}. Now choose the property below.") + "#gsc", status_code=303)
+
+
+@app.post("/clients/{cid}/gsc")
+def gsc_save(cid: int, gsc_property: str = Form(""), action: str = Form("save")):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        if action == "disconnect":
+            c.gsc_auth, c.gsc_property = {}, ""
+            db.commit()
+            return RedirectResponse(f"/clients/{cid}/settings?gsc_msg=Disconnected#gsc", status_code=303)
+        c.gsc_property = gsc_property.strip()
+        db.commit()
+        ok, msg = sources.gsc_test(c)
+    if ok:
+        jobs.enqueue(cid, "gsc_sync")
+    key = "gsc_msg" if ok else "gsc_err"
+    return RedirectResponse(f"/clients/{cid}/settings?{key}=" + quote(msg) + "#gsc", status_code=303)
+
+
 @app.post("/clients/{cid}/wordpress")
 def client_wordpress(cid: int, wp_url: str = Form(""), wp_user: str = Form(""), wp_app_password: str = Form(""),
                      action: str = Form("save")):
@@ -719,8 +774,15 @@ def post_update(request: Request, pid: int, action: str = Form(...), title: str 
 def client_settings(request: Request, cid: int):
     with SessionLocal() as db:
         c = get_client(db, cid)
+        sites, sites_err = [], ""
+        if (c.gsc_auth or {}).get("refresh_token") or config.GSC_SERVICE_ACCOUNT_JSON:
+            try:
+                sites = sources.gsc_sites(c)
+            except sources.GSCError as e:
+                sites_err = str(e)
         return render(request, "client_settings.html", c=c, s=client_stats(c), tab="settings",
-                      p=c.profile or {}, gsc_email=sources.gsc_service_email())
+                      p=c.profile or {}, gsc_email=sources.gsc_service_email(), gsc_sites=sites, gsc_sites_err=sites_err,
+                      oauth_ready=sources.google_oauth_ready())
 
 
 def _lines(s: str) -> list[str]:
@@ -729,13 +791,13 @@ def _lines(s: str) -> list[str]:
 
 @app.post("/clients/{cid}/settings")
 def client_settings_save(cid: int, name: str = Form(...), url: str = Form(...), cms: str = Form("unknown"),
-                         gsc_property: str = Form(""), rank_location: str = Form(""),
+                         rank_location: str = Form(""),
                          audit_interval_days: int = Form(7), rank_interval_days: int = Form(3),
                          paused: str = Form(""), notes: str = Form("")):
     with SessionLocal() as db:
         c = get_client(db, cid)
         c.name, c.url, c.cms = name.strip(), crawler.normalize(url if "://" in url else "https://" + url), cms
-        c.gsc_property, c.rank_location = gsc_property.strip(), rank_location.strip()
+        c.rank_location = rank_location.strip()
         c.audit_interval_days = max(1, min(60, audit_interval_days))
         c.rank_interval_days = max(1, min(30, rank_interval_days))
         c.paused, c.notes = paused == "on", notes
@@ -821,6 +883,7 @@ def settings(request: Request):
     login = config.DATAFORSEO_LOGIN.strip()
     masked = (login[:3] + "…" + login[login.find("@"):]) if "@" in login else (login[:3] + "…" if login else "")
     return render(request, "settings.html", gsc_email=sources.gsc_service_email(), cfg=config, dfs_login=masked,
+                  redirect_uri=_google_redirect_uri(request),
                   dfs_pw_len=len(config.DATAFORSEO_PASSWORD.strip()),
                   dfs_msg=request.query_params.get("dfs_msg", ""), dfs_ok=request.query_params.get("dfs_ok") == "1")
 

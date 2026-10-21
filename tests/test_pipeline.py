@@ -424,3 +424,70 @@ def test_dataforseo_errors_are_explained(monkeypatch):
     monkeypatch.setattr(sources.requests, "post", post)
     res = sources.organic_rank("botox", "x.com", "Nowhere,Nope,United States")
     assert res["position"] == 4 and calls[-1]["location_code"] == sources.US
+
+
+def test_search_console_connect_and_insights(monkeypatch):
+    from urllib.parse import parse_qs, urlparse
+
+    from fastapi.testclient import TestClient
+    from seoapp import sources
+    from seoapp.db import Alert, Keyword
+    from seoapp.main import app
+
+    with SessionLocal() as db:
+        c = db.scalars(__import__("sqlalchemy").select(Client)).first()
+        cid = c.id
+    monkeypatch.setattr(config, "GOOGLE_CLIENT_ID", "cid.apps.googleusercontent.com")
+    monkeypatch.setattr(config, "GOOGLE_CLIENT_SECRET", "secret")
+    monkeypatch.setattr(sources, "google_exchange", lambda code, uri: {"refresh_token": "rt", "email": "me@agency.com",
+                                                                      "connected": "2026-10-21"})
+    monkeypatch.setattr(sources, "gsc_sites", lambda c: [{"url": "sc-domain:glow.example", "permission": "siteOwner"},
+                                                          {"url": "https://other.example/", "permission": "siteFullUser"}])
+    botox, lip = BASE + "services/botox/", BASE + "services/lip-filler/"
+    current = [
+        # botox page: page 1 but almost no clicks -> low click-through
+        {"query": "botox newport beach", "page": botox, "clicks": 2, "impressions": 900, "ctr": 0.002, "position": 4.0},
+        # two pages split one search -> cannibalization
+        {"query": "lip filler near me", "page": lip, "clicks": 5, "impressions": 60, "ctr": 0.08, "position": 9.0},
+        {"query": "lip filler near me", "page": botox, "clicks": 1, "impressions": 40, "ctr": 0.02, "position": 14.0},
+        # a real search nobody is tracking -> keyword idea
+        {"query": "russian lip filler newport", "page": lip, "clicks": 3, "impressions": 80, "ctr": 0.04, "position": 7.0},
+    ]
+    previous = [{"query": "", "page": lip, "clicks": 60, "impressions": 500, "ctr": 0.1, "position": 6.0}]
+    monkeypatch.setattr(sources, "gsc_rows", lambda c, days=28, offset_days=0, dimensions=("query", "page"):
+                        previous if offset_days else current)
+
+    with TestClient(app) as tc:
+        r = tc.get(f"/clients/{cid}/gsc/connect", follow_redirects=False)
+        state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+        assert r.headers["location"].startswith("https://accounts.google.com/") and "webmasters.readonly" in r.headers["location"]
+        r = tc.get(f"/oauth/google/callback?state={state}&code=abc")
+        assert "Connected as me@agency.com" in r.text and "sc-domain:glow.example (whole domain)" in r.text
+        assert tc.get("/oauth/google/callback?state=forged&code=abc").status_code == 400
+        r = tc.post(f"/clients/{cid}/gsc", data={"gsc_property": "sc-domain:glow.example"})
+        assert "Connected to sc-domain:glow.example" in r.text
+        with SessionLocal() as db:
+            assert sources.gsc_ready(db.get(Client, cid))
+
+    run("gsc_sync", cid)
+    with SessionLocal() as db:
+        c = db.get(Client, cid)
+        fps = {r.fingerprint for r in c.recommendations if r.status == "open"}
+        assert f"rule:gsc_ctr:{botox}" in fps
+        assert "rule:gsc_cannibal:lip-filler-near-me" in fps
+        assert f"rule:gsc_drop:{lip}" in fps
+        assert "rule:gsc_invisible" in fps  # e.g. /about/ never appeared in Google
+        assert any(a.kind == "down" and a.page_url == lip for a in db.query(Alert).all())
+        idea = next(k for k in c.keywords if k.keyword == "russian lip filler newport")
+        assert idea.source == "gsc" and not idea.tracked and idea.target_url == lip
+        pid = next(p.id for p in c.pages if p.url == botox)
+    with TestClient(app) as tc:
+        assert "botox newport beach" in tc.get(f"/pages/{pid}").text and "times shown" in tc.get(f"/pages/{pid}").text
+        assert "Clicks 28d" in tc.get(f"/clients/{cid}/pages").text
+    # the next sync with the problem gone resolves the recommendation
+    current[0]["clicks"] = 90
+    run("gsc_sync", cid)
+    with SessionLocal() as db:
+        c = db.get(Client, cid)
+        assert next(r for r in c.recommendations if r.fingerprint == f"rule:gsc_ctr:{botox}").status == "resolved"
+        assert len([k for k in c.keywords if k.keyword == "russian lip filler newport"]) == 1  # not re-added

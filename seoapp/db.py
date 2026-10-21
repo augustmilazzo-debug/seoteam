@@ -36,6 +36,7 @@ class Client(Base):
     # Business facts extracted from the site (editable): services, locations, etc.
     profile: Mapped[dict] = mapped_column(JSON, default=dict)
     gsc_property: Mapped[str] = mapped_column(String(300), default="")
+    gsc_auth: Mapped[dict] = mapped_column(JSON, default=dict)  # Google sign-in for Search Console {refresh_token, email}
     # DataForSEO location for rank checks, e.g. "Newport Beach,California,United States"
     rank_location: Mapped[str] = mapped_column(String(200), default="")
     # Google Business Profile facts entered by hand until API access is approved.

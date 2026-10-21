@@ -15,7 +15,18 @@
       {% if dfs_msg %}<div class="notice {{ 'ok' if dfs_ok else '' }}" style="margin: 8px 0 0;">{{ '✅ ' if dfs_ok else '❌ ' }}{{ dfs_msg }}</div>{% endif %}</td>
     <td class="small"><code>DATAFORSEO_LOGIN</code>, <code>DATAFORSEO_PASSWORD</code></td></tr>
   <tr><td><b>Google Search Console</b></td><td>{{ '<span class="badge b-ok">Connected</span>'|safe if ints.gsc else '<span class="badge b-high">Not set</span>'|safe }}</td>
-    <td class="small">Real clicks, impressions and positions for every query.{% if gsc_email %}<br>Add <code>{{ gsc_email }}</code> as a user on each client's property.{% endif %}</td><td class="small"><code>GSC_SERVICE_ACCOUNT_JSON</code></td></tr>
+    <td class="small">Real clicks, impressions and positions for every search. Each client connects in its own Settings with <b>Connect Google Search Console</b>.
+      {% if not ints.google_oauth %}<details style="margin-top: 6px;"><summary>Turn on "Connect with Google" (one-time, about 10 minutes)</summary>
+      <ol style="padding-left: 18px;">
+        <li>Go to <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">console.cloud.google.com</a> → create a project (e.g. "SEO Command Center").</li>
+        <li>APIs &amp; Services → Library → search <b>Google Search Console API</b> → Enable.</li>
+        <li>APIs &amp; Services → OAuth consent screen (Google Auth Platform) → External → app name "SEO Command Center", your email → Save. Under Audience, click <b>Publish app</b> (so connections don't expire after 7 days).</li>
+        <li>Credentials → Create credentials → <b>OAuth client ID</b> → Web application. Under Authorized redirect URIs add:<br><code>{{ redirect_uri }}</code></li>
+        <li>Copy the Client ID and Client secret into Render → Environment as <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> → Save.</li>
+      </ol>
+      Google will show "Google hasn't verified this app" when you connect; click Advanced → Go to SEO Command Center. That's normal for an agency's own tool.</details>{% endif %}
+      {% if gsc_email %}<br>Service account (older method): add <code>{{ gsc_email }}</code> as a user on a client's property.{% endif %}</td>
+    <td class="small"><code>GOOGLE_CLIENT_ID</code>, <code>GOOGLE_CLIENT_SECRET</code><br><span class="muted">or</span> <code>GSC_SERVICE_ACCOUNT_JSON</code></td></tr>
   <tr><td><b>PageSpeed Insights</b></td><td>{{ '<span class="badge b-ok">Key set</span>'|safe if ints.pagespeed_key else '<span class="badge b-gray">Works without a key (lower limits)</span>'|safe }}</td>
     <td class="small">Mobile speed and Core Web Vitals</td><td class="small"><code>PAGESPEED_API_KEY</code></td></tr>
   <tr><td><b>Login password</b></td><td>{{ '<span class="badge b-ok">Set</span>'|safe if cfg.APP_PASSWORD else '<span class="badge b-critical">Not set: anyone with the link can open this</span>'|safe }}</td>

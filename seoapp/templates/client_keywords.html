@@ -6,7 +6,7 @@
   Connect at least one:
   <ul style="margin: 6px 0;">
     <li><b>DataForSEO</b> (recommended): Google and Maps positions from the client's city, plus search volumes. Add <code>DATAFORSEO_LOGIN</code> and <code>DATAFORSEO_PASSWORD</code> in Render → your service → Environment. See <a href="/settings">Settings</a>.</li>
-    <li><b>Google Search Console</b>: real average positions for queries the site already appears for (no Maps). Add <code>GSC_SERVICE_ACCOUNT_JSON</code> in Render, then enter this client's property in <a href="/clients/{{ c.id }}/settings">client settings</a>.</li>
+    <li><b>Google Search Console</b>: real average positions for queries the site already appears for (no Maps). Click <b>Connect Google Search Console</b> in <a href="/clients/{{ c.id }}/settings#gsc">this client's settings</a>.</li>
   </ul></div>
 {% elif not dfs_ready %}
 <div class="notice info">Positions come from Google Search Console only (average position, no Maps rankings). Connect DataForSEO in Render for exact Google + Maps positions from the client's city.</div>
