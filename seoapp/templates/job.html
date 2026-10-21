@@ -1,0 +1,7 @@
+{% extends "client_base.html" %}
+{% block client %}
+<p class="small"><a href="/clients/{{ c.id }}/activity">← Activity</a></p>
+<h2 style="margin-top: 0;">{{ JOB_LABELS.get(j.kind, j.kind) }} · <span class="badge {{ {'done': 'b-ok', 'failed': 'b-critical', 'running': 'b-brand', 'queued': 'b-gray'}[j.status] }}">{{ j.status }}</span></h2>
+{% if j.status in ('queued', 'running') %}<meta http-equiv="refresh" content="5">{% endif %}
+<pre class="log">{{ j.log or 'Waiting to start…' }}</pre>
+{% endblock %}

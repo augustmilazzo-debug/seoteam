@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log in · SEO Command Center</title><link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<main style="max-width: 380px; padding-top: 12vh;">
+  <div class="panel">
+    <h1>SEO Command Center</h1>
+    <p class="muted">Enter your password to continue.</p>
+    {% if error %}<div class="notice">{{ error }}</div>{% endif %}
+    <form method="post" action="/login">
+      <input type="password" name="password" autofocus required placeholder="Password">
+      <p><button class="primary" style="width: 100%;">Log in</button></p>
+    </form>
+  </div>
+</main>
+</body></html>

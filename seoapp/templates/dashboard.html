@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "macros.html" import rec_row %}
+{% block content %}
+<h1>Clients</h1>
+<p class="muted">Every client is re-audited automatically. Work through the highest scores first.</p>
+
+<div class="panel noprint" style="margin: 16px 0 24px;">
+  <h3 style="margin-top: 0;">Add a client</h3>
+  <form method="post" action="/clients" class="row">
+    <input class="grow" type="text" name="url" placeholder="Website, e.g. https://examplemedspa.com" required>
+    <input class="grow" type="text" name="name" placeholder="Business name (optional)">
+    <select name="cms" style="width: auto;">
+      <option value="unknown">Website platform…</option>
+      <option>WordPress</option><option>Wix</option><option>Squarespace</option><option>Webflow</option>
+      <option>Shopify</option><option>GoDaddy</option><option>Other</option>
+    </select>
+    <button class="primary">Add and run first audit</button>
+  </form>
+  <p class="small muted" style="margin-bottom: 0;">The first audit crawls the site, reads its services and locations, proposes target keywords and builds the recommendation list. It takes a few minutes.</p>
+</div>
+
+{% if rows %}
+<div class="table-wrap">
+<table>
+  <tr><th>Client</th><th>Health</th><th>Open items</th><th>Keywords in top 3 / top 10</th><th>Maps top 3</th><th>Waiting on you</th><th>Last audit</th></tr>
+  {% for c, s in rows %}
+  <tr>
+    <td><a href="/clients/{{ c.id }}"><b>{{ c.name }}</b></a><div class="small muted">{{ c.url.split('//', 1)[-1] }}</div>
+      {% if s.running %}<span class="badge b-brand">{{ JOB_LABELS.get(s.running.kind) }} {{ s.running.status }}</span>{% endif %}</td>
+    <td><span class="badge {{ 'b-ok' if s.health >= 80 else 'b-high' if s.health >= 50 else 'b-critical' }}">{{ s.health }}</span></td>
+    <td>{{ s.open }}{% if s.critical %} <span class="badge b-critical">{{ s.critical }} critical</span>{% endif %}</td>
+    <td>{% if s.tracked %}{{ s.top3 }} / {{ s.top10 }} <span class="muted small">of {{ s.tracked }}</span>{% else %}<span class="muted">–</span>{% endif %}</td>
+    <td>{% if s.tracked %}{{ s.maps_top3 }}{% else %}<span class="muted">–</span>{% endif %}</td>
+    <td>{% if s.awaiting_approval %}<span class="badge b-high">{{ s.awaiting_approval }} to approve</span>{% else %}<span class="muted">–</span>{% endif %}</td>
+    <td class="small">{{ c.last_audit_at|ago }}</td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+
+<h2>Top priorities across all clients</h2>
+<div class="panel">
+  {% for c, r in top %}{{ rec_row(r, c) }}{% else %}<div class="empty">No open recommendations yet.</div>{% endfor %}
+</div>
+{% else %}
+<div class="panel empty">No clients yet. Add the first one above.</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,51 @@
+{% macro level(l) %}<span class="badge b-{{ l }}">{{ l|capitalize }}</span>{% endmacro %}
+
+{% macro status(st) %}
+{% set cls = {'open': 'gray', 'approved': 'brand', 'done': 'ok', 'resolved': 'ok', 'dismissed': 'gray'}[st] %}
+<span class="badge b-{{ cls }}">{{ {'resolved': 'Verified fixed'}.get(st, st|capitalize) }}</span>
+{% endmacro %}
+
+{% macro position(k) %}
+{% if k.position %}<b>{{ k.position|round(1) if k.position % 1 else k.position|int }}</b>
+  {% if k.previous_position and k.previous_position != k.position %}
+    {% set d = k.previous_position - k.position %}
+    <span class="{{ 'pos-up' if d > 0 else 'pos-down' }}">{{ '▲' if d > 0 else '▼' }}{{ (d|abs)|round(1) }}</span>
+  {% endif %}
+{% elif k.last_checked %}<span class="muted">&gt;100</span>
+{% else %}<span class="muted">–</span>{% endif %}
+{% endmacro %}
+
+{% macro spark(k) %}
+{% set pts = (k.history or [])[-12:] %}
+{% if pts|length > 1 %}<span class="spark" title="Last {{ pts|length }} checks">
+{% for h in pts %}{% set p = h.position or 100 %}<i style="height: {{ [2, (18 - (p if p < 50 else 50) * 0.32)|int]|max }}px"></i>{% endfor %}
+</span>{% endif %}
+{% endmacro %}
+
+{% macro rec_row(r, show_client=None) %}
+<div class="rec">
+  <div class="score">{{ r.score|int }}<small>score</small></div>
+  <div class="body">
+    <div class="title"><a href="/recommendations/{{ r.id }}">{{ r.title }}</a></div>
+    <div class="meta">
+      {{ level(r.level) }}
+      <span>{{ CATEGORIES.get(r.category, r.category) }}</span>
+      {% if show_client %}<span>{{ show_client.name }}</span>{% endif %}
+      {% if r.keyword %}<span>“{{ r.keyword }}”</span>{% endif %}
+      {% if r.page_url %}<span class="nowrap" style="max-width: 320px; overflow: hidden; text-overflow: ellipsis;">{{ r.page_url.split('//', 1)[-1] }}</span>{% endif %}
+      <span>impact {{ r.impact }} · effort {{ r.effort }}</span>
+      {% if r.status != 'open' %}{{ status(r.status) }}{% endif %}
+      {% if r.needs_approval and r.draft_status != 'approved' %}<span class="badge b-high">Needs content approval</span>{% endif %}
+      {% if r.draft_status == 'draft' %}<span class="badge b-brand">Draft ready</span>{% endif %}
+    </div>
+  </div>
+  <div class="noprint row">
+    {% if r.status == 'open' %}
+    <form class="inline" method="post" action="/recommendations/{{ r.id }}/status"><input type="hidden" name="status" value="done"><button class="sm ok" title="I made this change">Done</button></form>
+    <form class="inline" method="post" action="/recommendations/{{ r.id }}/status"><input type="hidden" name="status" value="dismissed"><button class="sm" title="Not doing this">Dismiss</button></form>
+    {% elif r.status == 'approved' %}
+    <form class="inline" method="post" action="/recommendations/{{ r.id }}/status"><input type="hidden" name="status" value="done"><button class="sm ok">Done</button></form>
+    {% endif %}
+  </div>
+</div>
+{% endmacro %}

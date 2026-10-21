@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .env
 *service-account*.json
+data/app/
+.pytest_cache/

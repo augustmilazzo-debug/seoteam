@@ -1,3 +1,18 @@
+# SEO Command Center + Akari MedSpa SEO team
+
+This repo has two parts:
+
+1. **SEO Command Center** (`seoapp/`): a multi-client web app. Paste a client's website and
+   it crawls and audits every page, builds target keywords from their services and
+   locations, tracks Google + Maps rankings, and keeps a priority-ranked list of
+   recommendations (technical fixes, page edits, new pages, blogs, Google Business Profile),
+   with AI-written drafts and GBP posts that you approve. It re-audits automatically every
+   week. **Setup: [docs/SETUP.md](docs/SETUP.md)**. Run locally:
+   `pip install -r requirements.txt && uvicorn seoapp.main:app --reload`. Tests: `pytest tests/`.
+2. **Akari MedSpa daily pipeline** (below): the original Claude Code agent team for one site.
+
+---
+
 # Akari MedSpa SEO team
 
 A team of Claude agents that audits https://akarimedspa.com/ every day, finds the

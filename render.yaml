@@ -1,0 +1,32 @@
+# One-click deploy on Render: Dashboard -> New -> Blueprint -> pick this repo.
+services:
+  - type: web
+    name: seo-command-center
+    runtime: python
+    plan: starter            # always-on; the free plan sleeps and would stop the scheduler
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn seoapp.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    disk:
+      name: seo-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATA_DIR
+        value: /var/data
+      - key: SECRET_KEY
+        generateValue: true
+      - key: APP_PASSWORD
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: DATAFORSEO_LOGIN
+        sync: false
+      - key: DATAFORSEO_PASSWORD
+        sync: false
+      - key: GSC_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: PAGESPEED_API_KEY
+        sync: false

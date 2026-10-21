@@ -1,0 +1,78 @@
+{% extends "client_base.html" %}
+{% from "macros.html" import rec_row %}
+{% block client %}
+<div class="grid two">
+  <div>
+    <h2 style="margin-top: 0;">Posts for Google Business Profile</h2>
+    <p class="small muted">New posts are drafted automatically when fewer than 3 are waiting. Approve them, then post them on Google (copy, paste, add the photo) and click <b>Published</b>. Once Google approves API access, approved posts can be published automatically.</p>
+    <div class="row noprint" style="margin-bottom: 12px;">
+      <form class="inline" method="post" action="/clients/{{ c.id }}/run/gbp_posts"><button class="primary">Draft new posts</button></form>
+    </div>
+    {% for p in posts %}
+    <div class="post">
+      <div class="row" style="margin-bottom: 6px;">
+        <span class="badge {{ {'draft': 'b-high', 'approved': 'b-brand', 'published': 'b-ok', 'rejected': 'b-gray'}[p.status] }}">{{ {'draft': 'Needs approval'}.get(p.status, p.status|capitalize) }}</span>
+        <span class="badge b-gray">{{ p.post_type }}</span>
+        {% if p.suggested_date %}<span class="small muted">post on {{ p.suggested_date.strftime('%a %b %-d') }}</span>{% endif %}
+        {% if p.keyword %}<span class="small muted">· “{{ p.keyword }}”</span>{% endif %}
+      </div>
+      {% if p.status in ('draft', 'approved') %}
+      <form method="post" action="/posts/{{ p.id }}">
+        <input type="text" name="title" value="{{ p.title }}" style="font-weight: 600;">
+        <textarea id="post-{{ p.id }}" name="body" style="margin-top: 6px; min-height: 150px;">{{ p.body }}</textarea>
+        <div class="row" style="margin-top: 6px;">
+          <span class="small muted">Button: {{ p.cta }}</span>
+          <input class="grow" type="text" name="link" value="{{ p.link }}" placeholder="Link">
+          <input type="date" name="suggested_date" value="{{ p.suggested_date or '' }}" style="width: auto;">
+        </div>
+        {% if p.image_idea %}<p class="small muted">📷 {{ p.image_idea }}</p>{% endif %}
+        <div class="row">
+          {% if p.status == 'draft' %}<button class="primary" name="action" value="approved">Approve</button>{% endif %}
+          {% if p.status == 'approved' %}<button class="ok" name="action" value="published">Published</button>{% endif %}
+          <button name="action" value="save">Save</button>
+          <button type="button" data-copy="post-{{ p.id }}">Copy text</button>
+          <button class="danger" name="action" value="rejected">Reject</button>
+        </div>
+      </form>
+      {% else %}
+      <b>{{ p.title }}</b>
+      <p class="small" style="white-space: pre-wrap;">{{ p.body }}</p>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="panel empty">No posts yet. Fill in the profile details on the right, then click <b>Draft new posts</b>.</div>
+    {% endfor %}
+  </div>
+
+  <div>
+    <h2 style="margin-top: 0;">Profile details</h2>
+    <div class="panel">
+      <p class="small muted" style="margin-top: 0;">Copy these from the client's Google Business Profile. When you save, Claude audits the profile against the top Maps competitors and adds recommendations below.</p>
+      <form method="post" action="/clients/{{ c.id }}/gbp">
+        {% for key, label, kind in fields %}
+        <label>{{ label }}</label>
+        {% if kind == 'textarea' %}<textarea name="{{ key }}">{{ gbp.get(key, '') }}</textarea>
+        {% else %}<input type="text" name="{{ key }}" value="{{ gbp.get(key, '') }}">{% endif %}
+        {% endfor %}
+        <p><button class="primary">Save and audit profile</button></p>
+      </form>
+      {% if gbp.get('_maps_competitors') %}
+      <h3>Competitors seen in the Maps pack</h3>
+      <ul class="small">{% for t in gbp._maps_competitors %}<li>{{ t }}</li>{% endfor %}</ul>
+      {% endif %}
+    </div>
+
+    <h2>Maps rankings</h2>
+    <div class="table-wrap"><table>
+      <tr><th>Keyword</th><th>Maps position</th></tr>
+      {% for k in tracked %}<tr><td>{{ k.keyword }}</td><td>{{ k.local_pack_position or ('–' if not k.last_checked else '>20') }}</td></tr>
+      {% else %}<tr><td colspan="2" class="muted">Track keywords to see Maps positions.</td></tr>{% endfor %}
+    </table></div>
+  </div>
+</div>
+
+<h2>Profile and local recommendations</h2>
+<div class="panel">
+  {% for r in recs %}{{ rec_row(r) }}{% else %}<div class="empty">Save the profile details above to get a GBP audit.</div>{% endfor %}
+</div>
+{% endblock %}

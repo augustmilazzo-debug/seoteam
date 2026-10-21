@@ -1,0 +1,77 @@
+{% extends "client_base.html" %}
+{% from "macros.html" import level, status, position %}
+{% block client %}
+<p class="small"><a href="/clients/{{ c.id }}/recommendations">← All recommendations</a></p>
+<div class="grid two">
+  <div>
+    <div class="panel">
+      <div class="row" style="margin-bottom: 8px;">{{ level(r.level) }} <span class="badge b-gray">{{ CATEGORIES.get(r.category, r.category) }}</span> {{ status(r.status) }}</div>
+      <h1 style="font-size: 21px;">{{ r.title }}</h1>
+      {% if r.page_url %}<p class="small">Page: <a href="{{ r.page_url }}" target="_blank" rel="noopener">{{ r.page_url }}</a></p>{% endif %}
+      <div class="md">{{ r.details|md|safe }}</div>
+    </div>
+
+    {% if r.category in ('content', 'new_page', 'blog') or r.needs_approval or r.draft %}
+    <h2 id="draft">Content draft</h2>
+    <div class="panel">
+      {% if draft_job and draft_job.status in ('queued', 'running') %}
+        <div class="notice info">Claude is writing this draft (usually 1-3 minutes). This page refreshes on its own.</div>
+        <meta http-equiv="refresh" content="8">
+      {% elif draft_job and draft_job.status == 'failed' and not r.draft %}
+        <div class="notice">The draft failed. <a href="/jobs/{{ draft_job.id }}">Details</a></div>
+      {% endif %}
+      {% if r.draft %}
+        <div class="row" style="margin-bottom: 10px;">
+          {% if r.draft_status == 'approved' %}<span class="badge b-ok">Approved: ready to publish</span>
+          {% elif r.draft_status == 'rejected' %}<span class="badge b-gray">Rejected</span>
+          {% else %}<span class="badge b-high">Waiting for your approval</span>{% endif %}
+          <button type="button" class="sm" data-copy="draft-text">Copy text</button>
+        </div>
+        <details open><summary>Preview</summary><div class="md" style="margin-top: 10px;">{{ r.draft|md|safe }}</div></details>
+        <form method="post" action="/recommendations/{{ r.id }}/draft/save" style="margin-top: 14px;">
+          <label>Edit the draft (markdown)</label>
+          <textarea id="draft-text" name="draft" style="min-height: 320px; font-family: ui-monospace, monospace; font-size: 13px;">{{ r.draft }}</textarea>
+          <div class="row" style="margin-top: 8px;">
+            <button class="primary" name="action" value="approve">Approve</button>
+            <button name="action" value="save">Save edits</button>
+            <button class="danger" name="action" value="reject">Reject</button>
+          </div>
+        </form>
+        <form method="post" action="/recommendations/{{ r.id }}/draft" style="margin-top: 14px;">
+          <label>Ask for a rewrite</label>
+          <div class="row"><input class="grow" type="text" name="feedback" placeholder="e.g. shorter, mention Dr. Kim, add pricing section"><button>Rewrite</button></div>
+        </form>
+      {% elif not (draft_job and draft_job.status in ('queued', 'running')) %}
+        <p class="muted">Have Claude write the full content for this item. You review and approve it before anything is published.</p>
+        <form method="post" action="/recommendations/{{ r.id }}/draft"><button class="primary">Write the draft</button></form>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  <div>
+    <div class="panel">
+      <h3 style="margin-top: 0;">Priority</h3>
+      <table>
+        <tr><td>Score</td><td class="right"><b>{{ r.score }}</b> / 100</td></tr>
+        <tr><td>Impact</td><td class="right">{{ r.impact }} / 10</td></tr>
+        <tr><td>Effort</td><td class="right">{{ r.effort }} / 10</td></tr>
+        <tr><td>Confidence</td><td class="right">{{ (r.confidence * 100)|int }}%</td></tr>
+        {% if kw %}<tr><td>Keyword</td><td class="right">{{ kw.keyword }} {{ '★' * kw.priority }}</td></tr>
+        <tr><td>Current position</td><td class="right">{{ position(kw) }}</td></tr>{% endif %}
+        <tr><td>First found</td><td class="right">{{ r.created_at|ago }}</td></tr>
+        <tr><td>Last confirmed</td><td class="right">{{ r.last_seen_at|ago }}</td></tr>
+      </table>
+      <h3>Update status</h3>
+      <div class="row">
+        {% for st, label in [('approved', 'Approve'), ('done', 'Mark done'), ('dismissed', 'Dismiss'), ('open', 'Reopen')] if st != r.status %}
+        <form class="inline" method="post" action="/recommendations/{{ r.id }}/status"><input type="hidden" name="status" value="{{ st }}"><button class="{{ 'ok' if st == 'done' }}">{{ label }}</button></form>
+        {% endfor %}
+      </div>
+      <p class="small muted">When you mark an item done, its keyword's current position is saved. After 14 days the system records the change, and on-page edits to that page pause for a few weeks so the results can be measured.</p>
+      {% if r.baseline %}<p class="small">Baseline when done: position {{ r.baseline.position or 'n/a' }} on {{ r.baseline.date }}</p>{% endif %}
+      {% if r.result %}<p class="small"><b>Result:</b> {{ r.result }}</p>{% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,507 @@
+"""Web dashboard. Run locally with:  uvicorn seoapp.main:app --reload"""
+
+import datetime as dt
+import hmac
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from markdown_it import MarkdownIt
+from sqlalchemy import select
+from starlette.middleware.sessions import SessionMiddleware
+
+from . import audit, config, crawler, jobs, sources
+from .db import Client, GbpPost, Job, Keyword, Recommendation, SessionLocal, init_db, now
+
+
+@asynccontextmanager
+async def lifespan(app):
+    init_db()
+    jobs.start()
+    yield
+
+
+app = FastAPI(title="SEO Command Center", lifespan=lifespan)
+app.add_middleware(SessionMiddleware, secret_key=config.SECRET_KEY, max_age=60 * 60 * 24 * 30, https_only=False)
+app.mount("/static", StaticFiles(directory=config.ROOT / "static"), name="static")
+templates = Jinja2Templates(directory=config.ROOT / "templates")
+md = MarkdownIt("commonmark", {"html": False}).enable("table")
+
+CATEGORIES = {
+    "technical": "Technical", "on_page": "On-page", "content": "Content", "new_page": "New page",
+    "blog": "Blog", "gbp": "Google Business Profile", "local": "Local",
+}
+LEVEL_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def ago(d):
+    if not d:
+        return "never"
+    s = (now() - d).total_seconds()
+    if s < 0:
+        return "just now"
+    for unit, n in (("day", 86400), ("hour", 3600), ("minute", 60)):
+        if s >= n:
+            v = int(s // n)
+            return f"{v} {unit}{'s' if v != 1 else ''} ago"
+    return "just now"
+
+
+templates.env.filters["md"] = lambda s: md.render(s or "")
+templates.env.filters["ago"] = ago
+templates.env.globals.update(CATEGORIES=CATEGORIES, JOB_LABELS=jobs.JOB_LABELS, integrations=config.integrations)
+
+
+# -- auth ---------------------------------------------------------------------
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    open_paths = ("/login", "/static", "/healthz")
+    if config.APP_PASSWORD and not request.url.path.startswith(open_paths) \
+            and not request.session.get("auth"):
+        return RedirectResponse("/login", status_code=303)
+    return await call_next(request)
+
+
+@app.get("/healthz")
+def healthz():
+    return PlainTextResponse("ok")
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_form(request: Request):
+    return templates.TemplateResponse(request, "login.html", {"error": ""})
+
+
+@app.post("/login")
+def login(request: Request, password: str = Form(...)):
+    if config.APP_PASSWORD and hmac.compare_digest(password, config.APP_PASSWORD):
+        request.session["auth"] = True
+        return RedirectResponse("/", status_code=303)
+    return templates.TemplateResponse(request, "login.html", {"error": "Wrong password"}, status_code=401)
+
+
+@app.get("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=303)
+
+
+# -- helpers ------------------------------------------------------------------
+def get_or_404(db, model, oid: int):
+    obj = db.get(model, oid)
+    if not obj:
+        raise HTTPException(404, "Not found")
+    return obj
+
+
+def get_client(db, cid: int) -> Client:
+    return get_or_404(db, Client, cid)
+
+
+def open_recs(c: Client):
+    return sorted([r for r in c.recommendations if r.status in ("open", "approved")],
+                  key=lambda r: (-r.score, LEVEL_ORDER.get(r.level, 9)))
+
+
+def client_stats(c: Client) -> dict:
+    recs = open_recs(c)
+    tracked = [k for k in c.keywords if k.tracked]
+    ranked = [k.position for k in tracked if k.position]
+    return {
+        "health": audit.health_score(c.recommendations),
+        "open": len(recs),
+        "critical": sum(r.level == "critical" for r in recs),
+        "high": sum(r.level == "high" for r in recs),
+        "tracked": len(tracked),
+        "top3": sum(1 for p in ranked if p <= 3),
+        "top10": sum(1 for p in ranked if p <= 10),
+        "avg_pos": round(sum(ranked) / len(ranked), 1) if ranked else None,
+        "maps_top3": sum(1 for k in tracked if k.local_pack_position and k.local_pack_position <= 3),
+        "pages": len(jobs.html_pages(c)),
+        "awaiting_approval": sum(1 for r in c.recommendations if r.draft_status == "draft")
+        + sum(1 for p in c.posts if p.status == "draft"),
+        "running": next((j for j in sorted(c.jobs, key=lambda j: -j.id) if j.status in ("queued", "running")), None),
+        "last_job": next((j for j in sorted(c.jobs, key=lambda j: -j.id)), None),
+    }
+
+
+def render(request, name, **ctx):
+    return templates.TemplateResponse(request, name, ctx)
+
+
+def back(request: Request, default: str):
+    ref = request.headers.get("referer") or default
+    return RedirectResponse(ref, status_code=303)
+
+
+# -- dashboard ----------------------------------------------------------------
+@app.get("/", response_class=HTMLResponse)
+def dashboard(request: Request):
+    with SessionLocal() as db:
+        clients = db.scalars(select(Client).order_by(Client.name)).all()
+        rows = [(c, client_stats(c)) for c in clients]
+        top = []
+        for c in clients:
+            top += [(c, r) for r in open_recs(c)[:5]]
+        top.sort(key=lambda cr: -cr[1].score)
+        return render(request, "dashboard.html", rows=rows, top=top[:12])
+
+
+@app.post("/clients")
+def add_client(url: str = Form(...), name: str = Form(""), cms: str = Form("unknown"),
+               gsc_property: str = Form("")):
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    with SessionLocal() as db:
+        c = Client(name=name.strip() or sources.domain_of(url), url=crawler.normalize(url), cms=cms,
+                   gsc_property=gsc_property.strip())
+        db.add(c)
+        db.commit()
+        cid = c.id
+    jobs.enqueue(cid, "audit")
+    return RedirectResponse(f"/clients/{cid}", status_code=303)
+
+
+# -- client pages -------------------------------------------------------------
+@app.get("/clients/{cid}", response_class=HTMLResponse)
+def client_overview(request: Request, cid: int):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        tracked = sorted([k for k in c.keywords if k.tracked], key=lambda k: (-k.priority, k.position or 999))
+        recent_done = sorted([r for r in c.recommendations if r.status in ("done", "resolved")],
+                             key=lambda r: r.done_at or r.updated_at, reverse=True)[:8]
+        return render(request, "client_overview.html", c=c, s=client_stats(c), tab="overview",
+                      recs=open_recs(c)[:10], tracked=tracked[:15], recent_done=recent_done)
+
+
+@app.get("/clients/{cid}/recommendations", response_class=HTMLResponse)
+def client_recs(request: Request, cid: int, category: str = "", status: str = "active", level: str = ""):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        recs = c.recommendations
+        if status == "active":
+            recs = [r for r in recs if r.status in ("open", "approved")]
+        elif status:
+            recs = [r for r in recs if r.status == status]
+        if category:
+            recs = [r for r in recs if r.category == category]
+        if level:
+            recs = [r for r in recs if r.level == level]
+        recs = sorted(recs, key=lambda r: (-r.score, LEVEL_ORDER.get(r.level, 9)))
+        counts = {}
+        for r in c.recommendations:
+            if r.status in ("open", "approved"):
+                counts[r.category] = counts.get(r.category, 0) + 1
+        return render(request, "client_recs.html", c=c, s=client_stats(c), tab="recs", recs=recs,
+                      f={"category": category, "status": status, "level": level}, counts=counts)
+
+
+@app.get("/recommendations/{rid}", response_class=HTMLResponse)
+def rec_detail(request: Request, rid: int):
+    with SessionLocal() as db:
+        r = get_or_404(db, Recommendation, rid)
+        c = r.client
+        kw = next((k for k in c.keywords if k.keyword.lower() == (r.keyword or "").lower()), None)
+        draft_job = next((j for j in sorted(c.jobs, key=lambda j: -j.id)
+                          if j.kind == "draft" and (j.params or {}).get("rec_id") == r.id), None)
+        return render(request, "rec_detail.html", c=c, s=client_stats(c), tab="recs", r=r, kw=kw, draft_job=draft_job)
+
+
+@app.post("/recommendations/{rid}/status")
+def rec_status(request: Request, rid: int, status: str = Form(...)):
+    if status not in ("open", "approved", "done", "dismissed"):
+        raise HTTPException(400)
+    with SessionLocal() as db:
+        r = get_or_404(db, Recommendation, rid)
+        r.status = status
+        r.updated_at = now()
+        if status == "done":
+            r.done_at = now()
+            kw = next((k for k in r.client.keywords if k.keyword.lower() == (r.keyword or "").lower()), None)
+            r.baseline = {"position": kw.position if kw else None, "maps": kw.local_pack_position if kw else None,
+                          "date": dt.date.today().isoformat()}
+        db.commit()
+    return back(request, f"/recommendations/{rid}")
+
+
+@app.post("/recommendations/{rid}/draft")
+def rec_draft(rid: int, feedback: str = Form("")):
+    with SessionLocal() as db:
+        r = get_or_404(db, Recommendation, rid)
+        cid = r.client_id
+        r.draft_status = "writing" if not r.draft else r.draft_status
+        db.commit()
+    jobs.enqueue(cid, "draft", rec_id=rid, feedback=feedback)
+    return RedirectResponse(f"/recommendations/{rid}", status_code=303)
+
+
+@app.post("/recommendations/{rid}/draft/save")
+def rec_draft_save(rid: int, draft: str = Form(...), action: str = Form("save")):
+    with SessionLocal() as db:
+        r = get_or_404(db, Recommendation, rid)
+        r.draft = draft
+        if action == "approve":
+            r.draft_status = "approved"
+            if r.status == "open":
+                r.status = "approved"
+        elif action == "reject":
+            r.draft_status = "rejected"
+        db.commit()
+    return RedirectResponse(f"/recommendations/{rid}", status_code=303)
+
+
+@app.get("/clients/{cid}/keywords", response_class=HTMLResponse)
+def client_keywords(request: Request, cid: int, show: str = "all"):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        kws = c.keywords
+        if show == "tracked":
+            kws = [k for k in kws if k.tracked]
+        elif show == "ideas":
+            kws = [k for k in kws if not k.tracked]
+        kws = sorted(kws, key=lambda k: (not k.tracked, -k.priority, -(k.search_volume or 0), k.keyword))
+        pages = [p.url for p in jobs.ranked_pages(c)]
+        return render(request, "client_keywords.html", c=c, s=client_stats(c), tab="keywords", kws=kws,
+                      pages=pages, show=show)
+
+
+@app.post("/clients/{cid}/keywords/add")
+def keywords_add(cid: int, keywords: str = Form(...), priority: int = Form(4)):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        have = {k.keyword.lower() for k in c.keywords}
+        added = []
+        for line in keywords.splitlines():
+            kw = line.strip().lower()
+            if kw and kw not in have:
+                have.add(kw)
+                k = Keyword(client_id=c.id, keyword=kw, source="manual", priority=max(1, min(5, priority)), tracked=True)
+                db.add(k)
+                added.append(k)
+        db.commit()
+        if added:
+            jobs.step_metrics(db, c, lambda *_: None, added)
+    return RedirectResponse(f"/clients/{cid}/keywords", status_code=303)
+
+
+@app.post("/keywords/{kid}")
+def keyword_update(request: Request, kid: int, priority: int = Form(...), target_url: str = Form(""),
+                   tracked: str = Form("")):
+    with SessionLocal() as db:
+        k = get_or_404(db, Keyword, kid)
+        k.priority = max(1, min(5, priority))
+        k.target_url = target_url.strip()
+        k.tracked = tracked == "on"
+        db.commit()
+    return back(request, "/")
+
+
+@app.post("/clients/{cid}/keywords/bulk")
+def keywords_bulk(cid: int, action: str = Form(...), ids: list[int] = Form(default=[])):
+    with SessionLocal() as db:
+        for kid in ids:
+            k = db.get(Keyword, kid)
+            if not k or k.client_id != cid:
+                continue
+            if action == "track":
+                k.tracked = True
+            elif action == "untrack":
+                k.tracked = False
+            elif action == "delete":
+                db.delete(k)
+        db.commit()
+    return RedirectResponse(f"/clients/{cid}/keywords", status_code=303)
+
+
+@app.get("/clients/{cid}/pages", response_class=HTMLResponse)
+def client_pages(request: Request, cid: int):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        pages = sorted(c.pages, key=lambda p: (p.status_code != 200, p.depth, p.url))
+        targets = {}
+        for k in c.keywords:
+            if k.tracked and k.target_url:
+                targets.setdefault(k.target_url, []).append(k.keyword)
+        return render(request, "client_pages.html", c=c, s=client_stats(c), tab="pages", pages=pages, targets=targets)
+
+
+GBP_FIELDS = [
+    ("profile_url", "Google Maps / profile link", "text"),
+    ("primary_category", "Primary category", "text"),
+    ("secondary_categories", "Secondary categories (comma separated)", "text"),
+    ("business_name", "Business name exactly as shown on Google", "text"),
+    ("address", "Address on the profile", "text"),
+    ("phone", "Phone on the profile", "text"),
+    ("website_link", "Website link on the profile", "text"),
+    ("booking_link", "Booking link", "text"),
+    ("hours", "Hours", "text"),
+    ("description", "Business description", "textarea"),
+    ("services", "Services listed (one per line)", "textarea"),
+    ("review_count", "Number of reviews", "text"),
+    ("rating", "Star rating", "text"),
+    ("reviews_last_30_days", "New reviews in the last 30 days", "text"),
+    ("review_response_rate", "Share of reviews you reply to (e.g. 50%)", "text"),
+    ("photo_count", "Number of photos", "text"),
+    ("posts_last_30_days", "Posts in the last 30 days", "text"),
+    ("qna_count", "Questions & answers on the profile", "text"),
+    ("attributes", "Attributes set (e.g. women-owned, wheelchair accessible)", "text"),
+    ("notes", "Anything else (competitors, issues, suspensions)", "textarea"),
+]
+
+
+@app.get("/clients/{cid}/gbp", response_class=HTMLResponse)
+def client_gbp(request: Request, cid: int):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        posts = sorted(c.posts, key=lambda p: ({"draft": 0, "approved": 1, "published": 2, "rejected": 3}[p.status],
+                                               p.suggested_date or dt.date.max))
+        gbp_recs = [r for r in open_recs(c) if r.category in ("gbp", "local")]
+        tracked = sorted([k for k in c.keywords if k.tracked], key=lambda k: -k.priority)
+        return render(request, "client_gbp.html", c=c, s=client_stats(c), tab="gbp", posts=posts,
+                      fields=GBP_FIELDS, gbp=c.gbp or {}, recs=gbp_recs, tracked=tracked)
+
+
+@app.post("/clients/{cid}/gbp")
+async def client_gbp_save(request: Request, cid: int):
+    form = await request.form()
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        data = {k: v for k, v in (c.gbp or {}).items() if k.startswith("_")}
+        for key, _, _ in GBP_FIELDS:
+            v = str(form.get(key, "")).strip()
+            if v:
+                data[key] = v
+        data.pop("_audited", None)  # profile changed: audit it again
+        c.gbp = data
+        db.commit()
+    jobs.enqueue(cid, "gbp_audit")
+    return RedirectResponse(f"/clients/{cid}/gbp", status_code=303)
+
+
+@app.post("/posts/{pid}")
+def post_update(request: Request, pid: int, action: str = Form(...), title: str = Form(None),
+                body: str = Form(None), link: str = Form(None), suggested_date: str = Form(None)):
+    with SessionLocal() as db:
+        p = get_or_404(db, GbpPost, pid)
+        if title is not None:
+            p.title, p.body, p.link = title, body, link
+        if suggested_date:
+            try:
+                p.suggested_date = dt.date.fromisoformat(suggested_date)
+            except ValueError:
+                pass
+        if action in ("approved", "published", "rejected", "draft"):
+            p.status = action
+        elif action == "delete":
+            db.delete(p)
+        db.commit()
+    return back(request, "/")
+
+
+@app.get("/clients/{cid}/settings", response_class=HTMLResponse)
+def client_settings(request: Request, cid: int):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        return render(request, "client_settings.html", c=c, s=client_stats(c), tab="settings",
+                      p=c.profile or {}, gsc_email=sources.gsc_service_email())
+
+
+def _lines(s: str) -> list[str]:
+    return [x.strip() for x in (s or "").splitlines() if x.strip()]
+
+
+@app.post("/clients/{cid}/settings")
+def client_settings_save(cid: int, name: str = Form(...), url: str = Form(...), cms: str = Form("unknown"),
+                         gsc_property: str = Form(""), rank_location: str = Form(""),
+                         audit_interval_days: int = Form(7), rank_interval_days: int = Form(3),
+                         paused: str = Form(""), notes: str = Form("")):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        c.name, c.url, c.cms = name.strip(), crawler.normalize(url if "://" in url else "https://" + url), cms
+        c.gsc_property, c.rank_location = gsc_property.strip(), rank_location.strip()
+        c.audit_interval_days = max(1, min(60, audit_interval_days))
+        c.rank_interval_days = max(1, min(30, rank_interval_days))
+        c.paused, c.notes = paused == "on", notes
+        db.commit()
+    return RedirectResponse(f"/clients/{cid}/settings?saved=1", status_code=303)
+
+
+@app.post("/clients/{cid}/profile")
+def client_profile_save(cid: int, business_name: str = Form(""), business_type: str = Form(""),
+                        is_medical: str = Form(""), summary: str = Form(""), services: str = Form(""),
+                        locations: str = Form(""), service_areas: str = Form(""), usps: str = Form(""),
+                        providers: str = Form(""), brand_voice: str = Form(""), booking_url: str = Form("")):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        old = {s.get("name"): s for s in (c.profile or {}).get("services", [])}
+        svc = []
+        for line in _lines(services):
+            name, _, url = [x.strip() for x in line.partition("|")]
+            svc.append({"name": name, "url": url or old.get(name, {}).get("url", ""),
+                        "description": old.get(name, {}).get("description", "")})
+        locs = []
+        for line in _lines(locations):
+            parts = [x.strip() for x in line.split("|")] + ["", "", "", ""]
+            locs.append({"name": parts[0], "address": parts[1], "phone": parts[2], "dataforseo_location": parts[3],
+                         "city": parts[0], "state": ""})
+        c.profile = {**(c.profile or {}), "business_name": business_name, "business_type": business_type,
+                     "is_medical": is_medical == "on", "summary": summary, "services": svc, "locations": locs,
+                     "service_areas": _lines(service_areas), "unique_selling_points": _lines(usps),
+                     "providers": _lines(providers), "brand_voice": brand_voice, "booking_url": booking_url}
+        db.commit()
+    return RedirectResponse(f"/clients/{cid}/settings?saved=1", status_code=303)
+
+
+@app.post("/clients/{cid}/run/{kind}")
+def client_run(request: Request, cid: int, kind: str):
+    if kind not in jobs.HANDLERS or kind == "draft":
+        raise HTTPException(400)
+    jobs.enqueue(cid, kind)
+    return back(request, f"/clients/{cid}")
+
+
+@app.post("/clients/{cid}/delete")
+def client_delete(cid: int, confirm: str = Form("")):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        if confirm.strip().lower() != c.name.strip().lower():
+            return RedirectResponse(f"/clients/{cid}/settings?delete_error=1", status_code=303)
+        db.delete(c)
+        db.commit()
+    return RedirectResponse("/", status_code=303)
+
+
+@app.get("/clients/{cid}/activity", response_class=HTMLResponse)
+def client_activity(request: Request, cid: int):
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        js = sorted(c.jobs, key=lambda j: -j.id)[:40]
+        return render(request, "client_activity.html", c=c, s=client_stats(c), tab="activity", jobs=js)
+
+
+@app.get("/jobs/{jid}", response_class=HTMLResponse)
+def job_detail(request: Request, jid: int):
+    with SessionLocal() as db:
+        j = get_or_404(db, Job, jid)
+        return render(request, "job.html", c=j.client, s=client_stats(j.client), tab="activity", j=j)
+
+
+@app.get("/clients/{cid}/report", response_class=HTMLResponse)
+def client_report(request: Request, cid: int):
+    """Client-facing summary: progress, rankings, what was done, what's next."""
+    with SessionLocal() as db:
+        c = get_client(db, cid)
+        since = now() - dt.timedelta(days=30)
+        done = sorted([r for r in c.recommendations if r.status in ("done", "resolved") and r.done_at and r.done_at > since],
+                      key=lambda r: -r.score)
+        tracked = sorted([k for k in c.keywords if k.tracked], key=lambda k: (-k.priority, k.position or 999))
+        return render(request, "report.html", c=c, s=client_stats(c), done=done, next_up=open_recs(c)[:6],
+                      tracked=tracked, today=dt.date.today())
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings(request: Request):
+    return render(request, "settings.html", gsc_email=sources.gsc_service_email(), cfg=config)

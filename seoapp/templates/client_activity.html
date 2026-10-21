@@ -1,0 +1,18 @@
+{% extends "client_base.html" %}
+{% block client %}
+<div class="table-wrap">
+<table>
+  <tr><th>Job</th><th>Status</th><th>Started</th><th>Took</th><th></th></tr>
+  {% for j in jobs %}
+  <tr>
+    <td>{{ JOB_LABELS.get(j.kind, j.kind) }}</td>
+    <td><span class="badge {{ {'done': 'b-ok', 'failed': 'b-critical', 'running': 'b-brand', 'queued': 'b-gray'}[j.status] }}">{{ j.status }}</span></td>
+    <td class="small">{{ (j.started_at or j.created_at)|ago }}</td>
+    <td class="small">{% if j.finished_at and j.started_at %}{{ ((j.finished_at - j.started_at).total_seconds() / 60)|round(1) }} min{% endif %}</td>
+    <td><a href="/jobs/{{ j.id }}">Log</a></td>
+  </tr>
+  {% else %}<tr><td colspan="5" class="empty">No activity yet.</td></tr>{% endfor %}
+</table>
+</div>
+<p class="small muted">Automatic schedule: full audit every {{ c.audit_interval_days }} days, rank check every {{ c.rank_interval_days }} days{% if c.gbp %}, new GBP post drafts when fewer than 3 are waiting{% endif %}. Change it in Settings.</p>
+{% endblock %}

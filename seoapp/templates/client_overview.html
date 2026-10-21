@@ -1,0 +1,50 @@
+{% extends "client_base.html" %}
+{% from "macros.html" import rec_row, position, spark %}
+{% block client %}
+<div class="grid stats">
+  <div class="stat"><div class="v">{{ s.health }}</div><div class="l">Site health (0-100)</div></div>
+  <div class="stat"><div class="v">{{ s.critical }} / {{ s.high }}</div><div class="l">Critical / high items open</div></div>
+  <div class="stat"><div class="v">{{ s.top3 }} / {{ s.top10 }}</div><div class="l">Keywords in top 3 / top 10 (of {{ s.tracked }})</div></div>
+  <div class="stat"><div class="v">{{ s.avg_pos or '–' }}</div><div class="l">Average Google position</div></div>
+  <div class="stat"><div class="v">{{ s.maps_top3 }}</div><div class="l">Keywords in the Maps top 3</div></div>
+  <div class="stat"><div class="v">{{ s.awaiting_approval }}</div><div class="l">Content waiting for approval</div></div>
+</div>
+
+{% if not c.pages and not s.running %}
+<div class="notice info" style="margin-top: 16px;">This client hasn't been audited yet. Click <b>Run audit now</b>.</div>
+{% endif %}
+
+<div class="grid two" style="margin-top: 8px;">
+  <div>
+    <h2>Do these next</h2>
+    <div class="panel">
+      {% for r in recs %}{{ rec_row(r) }}{% else %}<div class="empty">Nothing open. Nice.</div>{% endfor %}
+      {% if recs %}<p class="small"><a href="/clients/{{ c.id }}/recommendations">See all {{ s.open }} recommendations →</a></p>{% endif %}
+    </div>
+  </div>
+  <div>
+    <h2>Target keywords</h2>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Keyword</th><th>Google</th><th>Maps</th></tr>
+        {% for k in tracked %}
+        <tr><td>{{ k.keyword }} <span class="muted small">{{ '★' * k.priority }}</span></td>
+          <td class="nowrap">{{ position(k) }} {{ spark(k) }}</td>
+          <td>{{ k.local_pack_position or ('–' if not k.last_checked else '>20') }}</td></tr>
+        {% else %}
+        <tr><td colspan="3" class="empty">No target keywords yet. They're generated in the first audit, or <a href="/clients/{{ c.id }}/keywords">add your own</a>.</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+    <p class="small"><a href="/clients/{{ c.id }}/keywords">Manage keywords →</a></p>
+
+    <h2>Recently completed</h2>
+    <div class="panel small">
+      {% for r in recent_done %}
+      <div style="padding: 6px 0;">{{ '✅' if r.status == 'resolved' else '✔︎' }} <a href="/recommendations/{{ r.id }}">{{ r.title }}</a>
+        <div class="muted">{{ 'Verified fixed by re-audit' if r.status == 'resolved' else 'Marked done' }} {{ r.done_at|ago }}{% if r.result %} · {{ r.result }}{% endif %}</div></div>
+      {% else %}<div class="muted">Nothing completed yet. Mark recommendations Done as you make the changes; the system measures their impact.</div>{% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}

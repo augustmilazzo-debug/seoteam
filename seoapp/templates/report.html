@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ c.name }} SEO report · {{ today.strftime('%B %Y') }}</title><link rel="stylesheet" href="/static/style.css">
+<style>main { max-width: 900px; } @media print { .table-wrap { border: 0; } }</style></head>
+<body>
+<main>
+  <p class="noprint small"><a href="/clients/{{ c.id }}">← Back</a> · <a href="#" onclick="window.print(); return false;">Print / save as PDF</a></p>
+  <h1>{{ c.name }}: SEO progress report</h1>
+  <p class="muted">{{ today.strftime('%B %-d, %Y') }} · {{ c.url }}</p>
+
+  <div class="grid stats" style="margin: 18px 0;">
+    <div class="stat"><div class="v">{{ s.health }}</div><div class="l">Site health score</div></div>
+    <div class="stat"><div class="v">{{ s.top3 }}</div><div class="l">Keywords in Google's top 3</div></div>
+    <div class="stat"><div class="v">{{ s.top10 }}</div><div class="l">Keywords on page 1</div></div>
+    <div class="stat"><div class="v">{{ s.maps_top3 }}</div><div class="l">Keywords in the Maps top 3</div></div>
+  </div>
+
+  <h2>Where you rank</h2>
+  <div class="table-wrap"><table>
+    <tr><th>Keyword</th><th>Google position</th><th>Change</th><th>Best</th><th>Maps</th></tr>
+    {% for k in tracked %}
+    <tr><td>{{ k.keyword }}</td>
+      <td>{{ (k.position|int) if k.position else ('Not in top 100' if k.last_checked else '–') }}</td>
+      <td>{% if k.position and k.previous_position %}{% set d = k.previous_position - k.position %}<span class="{{ 'pos-up' if d > 0 else 'pos-down' if d < 0 else '' }}">{{ ('+' if d > 0 else '') ~ (d|round(1)) if d else '–' }}</span>{% else %}–{% endif %}</td>
+      <td>{{ (k.best_position|int) if k.best_position else '–' }}</td>
+      <td>{{ k.local_pack_position or '–' }}</td></tr>
+    {% endfor %}
+  </table></div>
+
+  <h2>Completed in the last 30 days</h2>
+  <div class="panel">
+    {% for r in done %}<div style="padding: 5px 0;">✔︎ {{ r.title }}{% if r.result %} <span class="muted small">· {{ r.result }}</span>{% endif %}</div>
+    {% else %}<div class="muted">No completed items in this period.</div>{% endfor %}
+  </div>
+
+  <h2>Coming up next</h2>
+  <div class="panel">
+    {% for r in next_up %}<div style="padding: 5px 0;"><span class="badge b-{{ r.level }}">{{ r.level|capitalize }}</span> {{ r.title }}</div>
+    {% else %}<div class="muted">Nothing open.</div>{% endfor %}
+  </div>
+</main>
+</body></html>

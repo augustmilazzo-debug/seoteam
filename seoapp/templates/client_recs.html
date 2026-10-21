@@ -1,0 +1,26 @@
+{% extends "client_base.html" %}
+{% from "macros.html" import rec_row %}
+{% block client %}
+<form method="get" class="row noprint" style="margin-bottom: 14px;">
+  <select name="category" style="width: auto;">
+    <option value="">All types</option>
+    {% for key, label in CATEGORIES.items() %}<option value="{{ key }}" {{ 'selected' if f.category == key }}>{{ label }}{% if counts.get(key) %} ({{ counts[key] }}){% endif %}</option>{% endfor %}
+  </select>
+  <select name="level" style="width: auto;">
+    <option value="">All levels</option>
+    {% for l in ['critical', 'high', 'medium', 'low'] %}<option value="{{ l }}" {{ 'selected' if f.level == l }}>{{ l|capitalize }}</option>{% endfor %}
+  </select>
+  <select name="status" style="width: auto;">
+    {% for v, l in [('active', 'To do'), ('approved', 'Approved'), ('done', 'Done'), ('resolved', 'Verified fixed'), ('dismissed', 'Dismissed'), ('', 'Everything')] %}
+    <option value="{{ v }}" {{ 'selected' if f.status == v }}>{{ l }}</option>{% endfor %}
+  </select>
+  <button>Filter</button>
+  <span class="muted small grow">Sorted by priority score: impact × confidence × ease, boosted for your highest-priority keywords.</span>
+</form>
+<div class="panel">
+  {% for r in recs %}{{ rec_row(r) }}{% else %}<div class="empty">No recommendations match.</div>{% endfor %}
+</div>
+<div class="row noprint" style="margin-top: 14px;">
+  <form class="inline" method="post" action="/clients/{{ c.id }}/run/blog"><button>Suggest more blog posts</button></form>
+</div>
+{% endblock %}

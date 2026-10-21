@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Settings</h1>
+<p class="muted">Connections are set as environment variables in your hosting dashboard (Render → your service → Environment). See <code>docs/SETUP.md</code> for step-by-step instructions.</p>
+{% set ints = integrations() %}
+<div class="table-wrap" style="margin-top: 16px;">
+<table>
+  <tr><th>Connection</th><th>Status</th><th>What it powers</th><th>Variable(s)</th></tr>
+  <tr><td><b>Claude (Anthropic)</b></td><td>{{ '<span class="badge b-ok">Connected</span>'|safe if ints.claude else '<span class="badge b-critical">Not set</span>'|safe }}</td>
+    <td class="small">Business profile, keyword strategy, page optimization, new pages, blog ideas, drafts, GBP audit and posts. Model: <code>{{ cfg.CLAUDE_MODEL }}</code></td><td class="small"><code>ANTHROPIC_API_KEY</code></td></tr>
+  <tr><td><b>DataForSEO</b></td><td>{{ '<span class="badge b-ok">Connected</span>'|safe if ints.dataforseo else '<span class="badge b-high">Not set</span>'|safe }}</td>
+    <td class="small">Google and Maps rank tracking, competitor pages, search volume and difficulty</td><td class="small"><code>DATAFORSEO_LOGIN</code>, <code>DATAFORSEO_PASSWORD</code></td></tr>
+  <tr><td><b>Google Search Console</b></td><td>{{ '<span class="badge b-ok">Connected</span>'|safe if ints.gsc else '<span class="badge b-high">Not set</span>'|safe }}</td>
+    <td class="small">Real clicks, impressions and positions for every query.{% if gsc_email %}<br>Add <code>{{ gsc_email }}</code> as a user on each client's property.{% endif %}</td><td class="small"><code>GSC_SERVICE_ACCOUNT_JSON</code></td></tr>
+  <tr><td><b>PageSpeed Insights</b></td><td>{{ '<span class="badge b-ok">Key set</span>'|safe if ints.pagespeed_key else '<span class="badge b-gray">Works without a key (lower limits)</span>'|safe }}</td>
+    <td class="small">Mobile speed and Core Web Vitals</td><td class="small"><code>PAGESPEED_API_KEY</code></td></tr>
+  <tr><td><b>Login password</b></td><td>{{ '<span class="badge b-ok">Set</span>'|safe if cfg.APP_PASSWORD else '<span class="badge b-critical">Not set: anyone with the link can open this</span>'|safe }}</td>
+    <td class="small">Protects the dashboard</td><td class="small"><code>APP_PASSWORD</code></td></tr>
+</table>
+</div>
+<h2>Defaults</h2>
+<ul class="small">
+  <li>Up to {{ cfg.MAX_PAGES }} pages crawled per site (<code>MAX_PAGES</code>)</li>
+  <li>On-page changes to a page pause for {{ cfg.PAGE_COOLDOWN_DAYS }} days after one is marked done, so the impact can be measured (<code>PAGE_COOLDOWN_DAYS</code>)</li>
+  <li>New clients: full audit weekly, rank check every 3 days (change per client)</li>
+</ul>
+{% endblock %}

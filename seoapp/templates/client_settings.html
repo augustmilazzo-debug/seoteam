@@ -1,0 +1,61 @@
+{% extends "client_base.html" %}
+{% block client %}
+{% if request.query_params.get('saved') %}<div class="notice ok">Saved.</div>{% endif %}
+{% if request.query_params.get('delete_error') %}<div class="notice">To delete, type the client name exactly.</div>{% endif %}
+<div class="grid two">
+  <div class="panel">
+    <h3 style="margin-top: 0;">Client settings</h3>
+    <form method="post" action="/clients/{{ c.id }}/settings">
+      <label>Business name</label><input type="text" name="name" value="{{ c.name }}">
+      <label>Website</label><input type="text" name="url" value="{{ c.url }}">
+      <label>Website platform</label>
+      <select name="cms">{% for o in ['unknown', 'WordPress', 'Wix', 'Squarespace', 'Webflow', 'Shopify', 'GoDaddy', 'Other'] %}<option {{ 'selected' if c.cms == o }}>{{ o }}</option>{% endfor %}</select>
+      <label>Google Search Console property</label>
+      <input type="text" name="gsc_property" value="{{ c.gsc_property }}" placeholder="sc-domain:example.com  or  https://example.com/">
+      <p class="small muted">{% if gsc_email %}In Search Console, open this property → Settings → Users and permissions → Add user: <code>{{ gsc_email }}</code> (Restricted is enough).{% else %}Connect Search Console in <a href="/settings">Settings</a> first.{% endif %}</p>
+      <label>Rank-check location</label>
+      <input type="text" name="rank_location" value="{{ c.rank_location }}" placeholder="Newport Beach,California,United States">
+      <p class="small muted">Rankings are checked as if searching from this city. Format: City,State,United States.</p>
+      <div class="row">
+        <div class="grow"><label>Re-audit every (days)</label><input type="number" name="audit_interval_days" min="1" max="60" value="{{ c.audit_interval_days }}"></div>
+        <div class="grow"><label>Check rankings every (days)</label><input type="number" name="rank_interval_days" min="1" max="30" value="{{ c.rank_interval_days }}"></div>
+      </div>
+      <label class="check"><input type="checkbox" name="paused" {{ 'checked' if c.paused }}> Pause automatic audits for this client</label>
+      <label>Notes</label><textarea name="notes">{{ c.notes }}</textarea>
+      <p><button class="primary">Save settings</button></p>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top: 0;">Business profile</h3>
+    <p class="small muted">Read from the website on the first audit. Correct anything that's wrong: every recommendation and draft uses these facts.</p>
+    <form method="post" action="/clients/{{ c.id }}/profile">
+      <label>Business name</label><input type="text" name="business_name" value="{{ p.get('business_name', '') }}">
+      <label>Business type</label><input type="text" name="business_type" value="{{ p.get('business_type', '') }}" placeholder="Medical spa">
+      <label class="check"><input type="checkbox" name="is_medical" {{ 'checked' if p.get('is_medical') }}> Medical / health business (stricter claims rules)</label>
+      <label>Summary</label><textarea name="summary">{{ p.get('summary', '') }}</textarea>
+      <label>Services: one per line, optionally “Name | page URL”</label>
+      <textarea name="services" style="min-height: 140px;">{% for s in p.get('services', []) %}{{ s.name }}{% if s.url %} | {{ s.url }}{% endif %}
+{% endfor %}</textarea>
+      <label>Locations: one per line, “City | full address | phone | City,State,United States”</label>
+      <textarea name="locations">{% for l in p.get('locations', []) %}{{ l.city or l.name }} | {{ l.address }} | {{ l.phone }} | {{ l.dataforseo_location }}
+{% endfor %}</textarea>
+      <label>Service areas (one per line)</label><textarea name="service_areas">{{ p.get('service_areas', [])|join('\n') }}</textarea>
+      <label>What makes them different (one per line)</label><textarea name="usps">{{ p.get('unique_selling_points', [])|join('\n') }}</textarea>
+      <label>Providers and credentials (one per line)</label><textarea name="providers">{{ p.get('providers', [])|join('\n') }}</textarea>
+      <label>Brand voice</label><input type="text" name="brand_voice" value="{{ p.get('brand_voice', '') }}">
+      <label>Booking link</label><input type="text" name="booking_url" value="{{ p.get('booking_url', '') }}">
+      <p class="row"><button class="primary">Save profile</button></p>
+    </form>
+    <form method="post" action="/clients/{{ c.id }}/run/profile" class="inline"><button class="sm">Re-read from website</button></form>
+  </div>
+</div>
+
+<div class="panel" style="margin-top: 24px;">
+  <h3 style="margin-top: 0;">Delete client</h3>
+  <form method="post" action="/clients/{{ c.id }}/delete" class="row">
+    <input class="grow" type="text" name="confirm" placeholder="Type “{{ c.name }}” to confirm">
+    <button class="danger">Delete client and all its data</button>
+  </form>
+</div>
+{% endblock %}

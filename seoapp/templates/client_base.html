@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}{{ c.name }} · SEO Command Center{% endblock %}
+{% block content %}
+<div class="row">
+  <div class="grow">
+    <h1>{{ c.name }}</h1>
+    <div class="muted small"><a href="{{ c.url }}" target="_blank" rel="noopener">{{ c.url }}</a>
+      · last audit {{ c.last_audit_at|ago }} · ranks checked {{ c.last_rank_at|ago }}
+      {% if c.paused %}· <span class="badge b-high">Paused</span>{% endif %}</div>
+  </div>
+  <div class="row noprint">
+    <a class="btn" href="/clients/{{ c.id }}/report">Client report</a>
+    <form class="inline" method="post" action="/clients/{{ c.id }}/run/audit"><button class="primary">Run audit now</button></form>
+  </div>
+</div>
+{% if s.running %}
+<div class="notice info" style="margin-top: 14px;"><b>{{ JOB_LABELS.get(s.running.kind, s.running.kind) }}</b> is {{ s.running.status }}… this page refreshes automatically.
+  <a href="/jobs/{{ s.running.id }}">Watch progress</a></div>
+{% elif s.last_job and s.last_job.status == 'failed' %}
+<div class="notice" style="margin-top: 14px;">The last job ({{ JOB_LABELS.get(s.last_job.kind) }}) failed. <a href="/jobs/{{ s.last_job.id }}">See what happened</a></div>
+{% endif %}
+<div class="tabs">
+  <a href="/clients/{{ c.id }}" class="{{ 'on' if tab == 'overview' }}">Overview</a>
+  <a href="/clients/{{ c.id }}/recommendations" class="{{ 'on' if tab == 'recs' }}">Recommendations ({{ s.open }})</a>
+  <a href="/clients/{{ c.id }}/keywords" class="{{ 'on' if tab == 'keywords' }}">Keywords &amp; rankings</a>
+  <a href="/clients/{{ c.id }}/gbp" class="{{ 'on' if tab == 'gbp' }}">Google Business Profile</a>
+  <a href="/clients/{{ c.id }}/pages" class="{{ 'on' if tab == 'pages' }}">Pages ({{ s.pages }})</a>
+  <a href="/clients/{{ c.id }}/activity" class="{{ 'on' if tab == 'activity' }}">Activity</a>
+  <a href="/clients/{{ c.id }}/settings" class="{{ 'on' if tab == 'settings' }}">Settings</a>
+</div>
+{% block client %}{% endblock %}
+{% endblock %}

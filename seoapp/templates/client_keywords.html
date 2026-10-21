@@ -1,0 +1,71 @@
+{% extends "client_base.html" %}
+{% from "macros.html" import position, spark %}
+{% block client %}
+<div class="grid two">
+  <div class="panel">
+    <h3 style="margin-top: 0;">How this works</h3>
+    <p class="small">The system proposes keywords from the client's services and locations. <b>Tracked</b> keywords get rank checks (Google + Maps) and drive page recommendations. Set the <b>priority</b> (1-5 stars) for how much you want each one: higher priority keywords get worked on first. <b>Target page</b> is the one page that should rank for that keyword (blank = a new page is recommended).</p>
+    <div class="row">
+      <form class="inline" method="post" action="/clients/{{ c.id }}/run/keywords"><button>Suggest more keywords</button></form>
+      <form class="inline" method="post" action="/clients/{{ c.id }}/run/ranks"><button>Check rankings now</button></form>
+    </div>
+  </div>
+  <div class="panel">
+    <h3 style="margin-top: 0;">Add your own keywords</h3>
+    <form method="post" action="/clients/{{ c.id }}/keywords/add">
+      <textarea name="keywords" placeholder="One per line, e.g.&#10;lip filler newport beach&#10;botox irvine" style="min-height: 80px;"></textarea>
+      <div class="row" style="margin-top: 8px;">
+        <label class="check" style="margin: 0;">Priority
+          <select name="priority" style="width: auto;">{% for p in [5,4,3,2,1] %}<option value="{{ p }}" {{ 'selected' if p == 4 }}>{{ '★' * p }}</option>{% endfor %}</select></label>
+        <button class="primary">Add and track</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="row" style="margin: 18px 0 10px;">
+  {% for v, l in [('all', 'All'), ('tracked', 'Tracked'), ('ideas', 'Suggestions not tracked')] %}
+  <a class="btn sm {{ 'btn-primary' if show == v }}" href="?show={{ v }}">{{ l }}</a>{% endfor %}
+</div>
+
+<datalist id="pages">{% for u in pages %}<option value="{{ u }}">{% endfor %}</datalist>
+<form id="bulk" method="post" action="/clients/{{ c.id }}/keywords/bulk"></form>
+<div class="table-wrap">
+<table>
+  <tr>
+    <th><input type="checkbox" data-check-all form="bulk"></th>
+    <th>Keyword</th><th>Volume</th><th>Difficulty</th><th>Google</th><th>Maps</th><th>Clicks (28d)</th>
+    <th style="min-width: 380px;">Track · priority · target page</th>
+  </tr>
+  {% for k in kws %}
+  <tr>
+    <td><input type="checkbox" name="ids" value="{{ k.id }}" form="bulk"></td>
+    <td><b>{{ k.keyword }}</b>
+      <div class="small muted">{{ k.service }}{% if k.location %} · {{ k.location }}{% endif %}{% if k.intent %} · {{ k.intent }}{% endif %} · {{ k.source }}</div>
+      {% if k.ranking_url and k.target_url and k.ranking_url.rstrip('/') != k.target_url.rstrip('/') %}<div class="small" style="color: var(--high);">Google ranks a different page: {{ k.ranking_url }}</div>{% endif %}</td>
+    <td>{{ k.search_volume if k.search_volume is not none else '–' }}</td>
+    <td>{{ k.difficulty if k.difficulty is not none else '–' }}</td>
+    <td class="nowrap">{{ position(k) }} {{ spark(k) }}{% if k.best_position %}<div class="small muted">best {{ k.best_position|int }}</div>{% endif %}</td>
+    <td>{{ k.local_pack_position or ('–' if not k.last_checked else '>20') }}</td>
+    <td>{{ k.gsc_clicks if k.gsc_clicks is not none else '–' }}</td>
+    <td>
+      <form method="post" action="/keywords/{{ k.id }}" class="row" style="gap: 6px;">
+        <label class="check" style="margin: 0;"><input type="checkbox" name="tracked" {{ 'checked' if k.tracked }}> Track</label>
+        <select name="priority" style="width: auto;">{% for p in [5,4,3,2,1] %}<option value="{{ p }}" {{ 'selected' if p == k.priority }}>{{ '★' * p }}</option>{% endfor %}</select>
+        <input class="grow" type="text" name="target_url" value="{{ k.target_url }}" list="pages" placeholder="(new page needed)">
+        <button class="sm">Save</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8" class="empty">No keywords yet.</td></tr>
+  {% endfor %}
+</table>
+</div>
+<div class="row" style="margin-top: 10px;">
+  <span class="small muted">With selected:</span>
+  <button form="bulk" name="action" value="track" class="sm">Track</button>
+  <button form="bulk" name="action" value="untrack" class="sm">Stop tracking</button>
+  <button form="bulk" name="action" value="delete" class="sm danger">Delete</button>
+</div>
+{% endblock %}

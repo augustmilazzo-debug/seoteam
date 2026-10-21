@@ -1,4 +1,17 @@
-anthropic
+anthropic>=2.0
 requests
 google-auth
 google-api-python-client
+# SEO Command Center web app (seoapp/)
+fastapi
+uvicorn[standard]
+jinja2
+python-multipart
+itsdangerous
+sqlalchemy>=2.0
+psycopg2-binary
+beautifulsoup4
+lxml
+apscheduler<4
+markdown-it-py
+pydantic>=2
